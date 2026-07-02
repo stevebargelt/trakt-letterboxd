@@ -1,9 +1,11 @@
 ---
 id: FG-12
 type: story
-status: active
+status: done
 title: "US-012: End-to-end dry-run and run reporting"
 created: 2026-07-02
+closed: 2026-07-02
+closed_commit: 47a890d9c49c5e253eaf87a673b07b524f7ea533
 ---
 
 **Description:** As a user, I want a trustworthy summary of every sync so I know exactly what happened or would happen.
