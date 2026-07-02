@@ -1,0 +1,118 @@
+# forge v2 — model policy (EXAMPLE / opt-in) — AWN-7
+#
+# Copy this to ~/.forge/model-policy.yml (or <project>/.forge/model-policy.yml)
+# to switch model resolution into POLICY MODE. With NO model-policy.yml present,
+# forge uses legacy resolution (workflow alias -> runtime.models[alias]) and
+# behavior is unchanged — installing this example file does NOT activate it.
+#
+# Policy mode resolves in two passes:
+#   1. capability  — workflow step `activity:` alias (legacy name `model:` still
+#                    accepted, deprecated), else the agent's default activity,
+#                    yields a capability alias (e.g. `review`).
+#   2. profile     — CLI --profile > project policy > user policy > forge default,
+#                    yields a profile (hence provider + auth).
+# then:  concrete model = model_profiles[<profile>].map[<capability>].model
+# and:   (provider, effective_auth) -> runtime YAML (the execution mechanism).
+#
+# A profile owns POLICY (provider + auth intent + capability->model/cost map).
+# The runtime YAML still owns EXECUTION (image, command, mounts, prompt/result).
+
+# Global default when a resolved profile has no working auth in this environment.
+# fail = clear error naming the provider + missing auth (never silently run a
+# different model than policy specified). Override per-profile below.
+on_unavailable: fail
+
+model_profiles:
+  # Personal Claude Pro / Max via OAuth subscription. Opus available.
+  claude-subscription:
+    provider: anthropic
+    auth: subscription
+    map:
+      reasoning: { model: claude-opus-4-8,   cost_tier: premium }
+      review:    { model: claude-sonnet-4-6, cost_tier: standard }
+      fast:      { model: claude-haiku-4-5,   cost_tier: cheap }
+      default:   { model: claude-sonnet-4-6, cost_tier: standard }
+
+  # AWS Bedrock. Work-account Bedrock does NOT expose Opus — `reasoning` maps to
+  # Sonnet (strongest available there). This is why a profile owns its own map.
+  claude-bedrock:
+    provider: anthropic
+    auth: bedrock
+    on_unavailable: fail
+    map:
+      reasoning: { model: us.anthropic.claude-sonnet-4-6, cost_tier: standard }
+      review:    { model: us.anthropic.claude-sonnet-4-6, cost_tier: standard }
+      fast:      { model: us.anthropic.claude-haiku-4-5-20251001-v1:0, cost_tier: cheap }
+      default:   { model: us.anthropic.claude-sonnet-4-6, cost_tier: standard }
+
+  # Anthropic API key (escape hatch).
+  claude-api:
+    provider: anthropic
+    auth: api
+    map:
+      reasoning: { model: claude-opus-4-8,   cost_tier: premium }
+      review:    { model: claude-sonnet-4-6, cost_tier: standard }
+      fast:      { model: claude-haiku-4-5,   cost_tier: cheap }
+      default:   { model: claude-sonnet-4-6, cost_tier: standard }
+
+  # Codex (OpenAI) via ChatGPT subscription — the AWN-7 Walk second provider.
+  # Runs the `codex` CLI in a container (codex exec --json); auth is the host's
+  # ~/.codex/auth.json (run `codex login` first; `forge providers doctor` shows
+  # openai/subscription availability). Set the model id to a valid codex model
+  # for your account (see ~/.codex/config.toml). openai/api (codex-apikey) is not
+  # wired yet — subscription only for now.
+  codex-subscription:
+    provider: openai
+    auth: subscription
+    map:
+      reasoning: { model: gpt-5.5, cost_tier: premium }
+      review:    { model: gpt-5.5, cost_tier: standard }
+      default:   { model: gpt-5.5, cost_tier: standard }
+
+  # pi via Groq API key. Requires GROQ_API_KEY in the host env; `forge providers
+  # doctor` reports groq/api availability. A dispatch fails loud before running if
+  # the key is absent. Add to allowed_profiles and defaults to enable.
+  #
+  # tool_capable: pi runtimes front arbitrary upstreams (Groq, Ollama, etc.) whose
+  # tool-calling quality is unknown. The default for pi profiles is NOT capable —
+  # structured roles (engineer, red-*, etc.) are refused at dispatch unless the
+  # capability entry explicitly sets tool_capable: true. Narrative roles (research-
+  # specialist, etc.) are always allowed through; FG-337 handles their completion.
+  # Anthropic and OpenAI subscription/API profiles are known-good and default to
+  # capable — they require no tool_capable field.
+  pi-groq:
+    provider: groq
+    runtime: pi-apikey
+    auth: api
+    map:
+      default: { model: moonshotai/kimi-k2-instruct, cost_tier: standard, tool_capable: true }
+
+defaults:
+  # Ultimate fallback when no activity/agent override matches.
+  profile: claude-subscription
+  # capability (activity) -> profile.
+  activity:
+    reasoning: claude-subscription
+    review:    claude-subscription
+    fast:      claude-subscription
+
+overrides:
+  # agent role -> profile. Pin specific agents to a specific provider/auth. This
+  # is mixed-provider routing: the SAME workflow YAML runs across providers, the
+  # policy decides per-agent. Example: security review on Bedrock, a wide red on
+  # Codex — both from one unchanged workflow.
+  agents:
+    red-security: claude-bedrock
+    red-wide: codex-subscription
+    # Mixed-provider dual research: each independent researcher runs on a different
+    # provider, ensuring no shared context or provider-level bias between branches.
+    research-primary: claude-subscription
+    research-skeptic: codex-subscription
+
+# Bounds orchestrator autonomy (enforced once bounded orchestrator choice lands
+# in the Run stage, #225). Empty/absent = all defined profiles allowed.
+allowed_profiles:
+  - claude-subscription
+  - claude-bedrock
+  - claude-api
+  - codex-subscription

@@ -1,0 +1,3 @@
+# forge — per-developer claude-code config (machine-local, not committed)
+.claude/settings.local.json
+.claude/commands/
