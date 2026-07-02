@@ -278,6 +278,15 @@ mod tests {
             })
         }
 
+        fn post_json_auth(
+            &self,
+            _url: &str,
+            _body: &str,
+            _access_token: &str,
+        ) -> Result<HttpResponse, String> {
+            unreachable!("auth tests do not call post_json_auth")
+        }
+
         fn get(&self, _url: &str, _access_token: &str) -> Result<HttpResponse, String> {
             unreachable!("auth tests do not call GET")
         }

@@ -318,6 +318,15 @@ mod tests {
             unreachable!("trakt_read tests do not call post_json")
         }
 
+        fn post_json_auth(
+            &self,
+            _url: &str,
+            _body: &str,
+            _access_token: &str,
+        ) -> Result<HttpResponse, String> {
+            unreachable!("trakt_read tests do not call post_json_auth")
+        }
+
         fn get(&self, _url: &str, _access_token: &str) -> Result<HttpResponse, String> {
             let mut q = self.responses.lock().unwrap();
             let (status, body, headers) = q

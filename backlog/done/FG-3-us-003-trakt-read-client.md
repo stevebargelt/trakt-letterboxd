@@ -1,9 +1,11 @@
 ---
 id: FG-3
 type: story
-status: active
+status: done
 title: "US-003: Trakt read client"
 created: 2026-07-02
+closed: 2026-07-02
+closed_commit: 2afe59e0cc09562396277c7b747c88c9dac723c8
 ---
 
 **Description:** As the developer, I need to read the user's Trakt data so it can be exported toward Letterboxd.

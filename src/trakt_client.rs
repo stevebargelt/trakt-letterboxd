@@ -9,6 +9,12 @@ pub struct HttpResponse {
 
 pub trait TraktHttpClient {
     fn post_json(&self, url: &str, body: &str) -> Result<HttpResponse, String>;
+    fn post_json_auth(
+        &self,
+        url: &str,
+        body: &str,
+        access_token: &str,
+    ) -> Result<HttpResponse, String>;
     fn get(&self, url: &str, access_token: &str) -> Result<HttpResponse, String>;
 }
 
@@ -56,6 +62,42 @@ impl TraktHttpClient for ReqwestClient {
             status,
             body,
             headers: HashMap::new(),
+        })
+    }
+
+    fn post_json_auth(
+        &self,
+        url: &str,
+        body: &str,
+        access_token: &str,
+    ) -> Result<HttpResponse, String> {
+        let response = self
+            .client
+            .post(url)
+            .header(CONTENT_TYPE, "application/json")
+            .header("Authorization", format!("Bearer {access_token}"))
+            .body(body.to_string())
+            .send()
+            .map_err(|e| format!("HTTP request failed: {e}"))?;
+
+        let status = response.status().as_u16();
+        let headers: HashMap<String, String> = response
+            .headers()
+            .iter()
+            .filter_map(|(k, v)| {
+                v.to_str()
+                    .ok()
+                    .map(|vs| (k.as_str().to_lowercase(), vs.to_string()))
+            })
+            .collect();
+        let body = response
+            .text()
+            .map_err(|e| format!("failed to read response body: {e}"))?;
+
+        Ok(HttpResponse {
+            status,
+            body,
+            headers,
         })
     }
 
