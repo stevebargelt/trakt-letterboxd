@@ -1,9 +1,11 @@
 ---
 id: FG-1
 type: story
-status: active
+status: done
 title: "US-001: Project scaffold and configuration"
 created: 2026-07-02
+closed: 2026-07-02
+closed_commit: 0f5e120
 ---
 
 **Description:** As the developer, I need a Rust project skeleton and config loading so all later work has a home and a way to read credentials/settings.
