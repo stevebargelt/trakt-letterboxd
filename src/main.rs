@@ -6,6 +6,7 @@ mod auth;
 mod config;
 mod trakt_client;
 mod trakt_read;
+mod trakt_write;
 
 #[derive(Parser)]
 #[command(
