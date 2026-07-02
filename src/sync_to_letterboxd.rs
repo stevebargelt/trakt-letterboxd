@@ -6,6 +6,7 @@ use crate::{
     letterboxd_import::{write_diary_csv, write_watchlist_csv},
     sync_state::{Direction, ItemRef, ItemType, SyncKey, SyncState},
     trakt_client::TraktHttpClient,
+    trakt_notes,
     trakt_read::{
         fetch_ratings, fetch_watched_history, fetch_watchlist, WatchedMovie, WatchlistMovie,
     },
@@ -17,6 +18,7 @@ pub struct SyncSummary {
     pub watchlist_rows: u32,
     pub skipped: u32,
     pub dry_run: bool,
+    pub reviews_in_diary: u32,
 }
 
 fn truncate_date(ts: &str) -> &str {
@@ -86,6 +88,8 @@ pub fn run(
         }
     });
 
+    let notes = trakt_notes::fetch_movie_notes(client, base_url, access_token);
+
     let rating_map: HashMap<u64, u8> = ratings
         .iter()
         .filter_map(|r| r.movie.tmdb_id.map(|id| (id, r.rating)))
@@ -99,6 +103,15 @@ pub fn run(
                 .unwrap_or(false)
         })
         .count() as u32;
+    let reviews_in_diary = history
+        .iter()
+        .filter(|e| {
+            e.movie
+                .tmdb_id
+                .map(|id| notes.contains_key(&id))
+                .unwrap_or(false)
+        })
+        .count() as u32;
 
     let diary_rows = history.len() as u32;
     let watchlist_rows = watchlist.len() as u32;
@@ -108,7 +121,7 @@ pub fn run(
 
         let diary_file = std::fs::File::create(data_dir.join("letterboxd-diary-import.csv"))
             .map_err(|e| format!("failed to create diary CSV: {e}"))?;
-        write_diary_csv(io::BufWriter::new(diary_file), &history, &ratings)?;
+        write_diary_csv(io::BufWriter::new(diary_file), &history, &ratings, &notes)?;
 
         let watchlist_file =
             std::fs::File::create(data_dir.join("letterboxd-watchlist-import.csv"))
@@ -130,6 +143,7 @@ pub fn run(
         watchlist_rows,
         skipped,
         dry_run,
+        reviews_in_diary,
     })
 }
 
@@ -715,6 +729,119 @@ mod tests {
                 .join("letterboxd-watchlist-import.csv")
                 .exists(),
             "watchlist CSV must be at <data_dir>/letterboxd-watchlist-import.csv"
+        );
+    }
+
+    fn note_json(tmdb: u64, note: &str) -> String {
+        format!(
+            r#"[{{"id":1,"note":"{note}","spoiler":false,"privacy":"private","likes":0,"replies":0,"attached_to":{{"type":"movie","id":1}},"movie":{{"title":"Film","year":2024,"ids":{{"trakt":1,"slug":"film","imdb":"tt1","tmdb":{tmdb}}}}},"created_at":"2024-01-01T00:00:00.000Z","updated_at":"2024-01-01T00:00:00.000Z"}}]"#
+        )
+    }
+
+    #[test]
+    fn t2l_reads_trakt_note_into_review_column() {
+        let data_dir = TempDir::new().unwrap();
+
+        let client = MockClient::new(vec![
+            (
+                200,
+                history_json(&[("The Matrix", 1999, 603, "2024-01-15T20:30:00.000Z")]),
+                page_headers(1),
+            ),
+            (200, ratings_json(&[]), page_headers(1)),
+            (200, watchlist_json(&[]), page_headers(1)),
+            (
+                200,
+                note_json(603, "Absolutely brilliant."),
+                page_headers(1),
+            ),
+        ]);
+
+        let summary = run(
+            &client,
+            data_dir.path(),
+            "https://api.trakt.tv",
+            "token",
+            false,
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(
+            summary.reviews_in_diary, 1,
+            "one note should populate Review column"
+        );
+
+        let diary =
+            std::fs::read_to_string(data_dir.path().join("letterboxd-diary-import.csv")).unwrap();
+        let lines: Vec<&str> = diary.lines().collect();
+        assert_eq!(lines.len(), 2, "header + one data row");
+        assert!(
+            lines[1].contains("Absolutely brilliant."),
+            "Review column must contain the note text: {}",
+            lines[1]
+        );
+    }
+
+    #[test]
+    fn t2l_dry_run_reports_reviews_in_diary_without_writing() {
+        let data_dir = TempDir::new().unwrap();
+
+        let client = MockClient::new(vec![
+            (
+                200,
+                history_json(&[("The Matrix", 1999, 603, "2024-01-15T20:30:00.000Z")]),
+                page_headers(1),
+            ),
+            (200, ratings_json(&[]), page_headers(1)),
+            (200, watchlist_json(&[]), page_headers(1)),
+            (200, note_json(603, "Great film."), page_headers(1)),
+        ]);
+
+        let summary = run(
+            &client,
+            data_dir.path(),
+            "https://api.trakt.tv",
+            "token",
+            true,
+            false,
+        )
+        .unwrap();
+
+        assert!(summary.dry_run);
+        assert_eq!(
+            summary.reviews_in_diary, 1,
+            "dry run must still report review count"
+        );
+        assert!(
+            !data_dir.path().join("letterboxd-diary-import.csv").exists(),
+            "dry run must not write files"
+        );
+    }
+
+    #[test]
+    fn t2l_no_notes_reviews_in_diary_is_zero() {
+        let data_dir = TempDir::new().unwrap();
+
+        let client = MockClient::new(standard_responses(
+            &[("The Matrix", 1999, 603, "2024-01-15T20:30:00.000Z")],
+            &[],
+            &[],
+        ));
+
+        let summary = run(
+            &client,
+            data_dir.path(),
+            "https://api.trakt.tv",
+            "token",
+            false,
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(
+            summary.reviews_in_diary, 0,
+            "no notes available → zero reviews in diary"
         );
     }
 }

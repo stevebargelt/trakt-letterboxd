@@ -23,6 +23,7 @@ pub enum ItemType {
     Watched,
     Rating,
     Watchlist,
+    Review,
 }
 
 impl ItemType {
@@ -31,6 +32,7 @@ impl ItemType {
             ItemType::Watched => "watched",
             ItemType::Rating => "rating",
             ItemType::Watchlist => "watchlist",
+            ItemType::Review => "review",
         }
     }
 }

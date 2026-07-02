@@ -14,6 +14,7 @@ pub fn write_diary_csv<W: io::Write>(
     w: W,
     history: &[WatchedMovie],
     ratings: &[RatedMovie],
+    notes: &HashMap<u64, String>,
 ) -> Result<(), String> {
     let rating_map: HashMap<u64, u8> = ratings
         .iter()
@@ -43,6 +44,11 @@ pub fn write_diary_csv<W: io::Write>(
             .and_then(|id| rating_map.get(&id))
             .map(|&r| format!("{:.1}", trakt_rating_to_letterboxd(r)))
             .unwrap_or_default();
+        let review = movie
+            .tmdb_id
+            .and_then(|id| notes.get(&id))
+            .map(String::as_str)
+            .unwrap_or("");
 
         let row = [
             movie.title.as_str(),
@@ -52,7 +58,7 @@ pub fn write_diary_csv<W: io::Write>(
             rating.as_str(),
             "No",
             "",
-            "",
+            review,
         ];
         wtr.write_record(row).map_err(|e| e.to_string())?;
     }
@@ -83,6 +89,7 @@ pub fn write_watchlist_csv<W: io::Write>(w: W, watchlist: &[WatchlistMovie]) -> 
 mod tests {
     use super::*;
     use crate::trakt_read::{MovieRecord, RatedMovie, WatchedMovie, WatchlistMovie};
+    use std::collections::HashMap;
 
     fn make_movie(title: &str, year: u32, tmdb_id: u64) -> MovieRecord {
         MovieRecord {
@@ -136,7 +143,7 @@ mod tests {
         let ratings = vec![make_rated(603, 8)];
 
         let mut out = Vec::new();
-        write_diary_csv(&mut out, &history, &ratings).unwrap();
+        write_diary_csv(&mut out, &history, &ratings, &HashMap::new()).unwrap();
         let lines = to_lines(out);
 
         assert_eq!(
@@ -156,7 +163,7 @@ mod tests {
         )];
 
         let mut out = Vec::new();
-        write_diary_csv(&mut out, &history, &[]).unwrap();
+        write_diary_csv(&mut out, &history, &[], &HashMap::new()).unwrap();
         let lines = to_lines(out);
 
         assert!(
@@ -181,7 +188,7 @@ mod tests {
         )];
 
         let mut out = Vec::new();
-        write_diary_csv(&mut out, &history, &[]).unwrap();
+        write_diary_csv(&mut out, &history, &[], &HashMap::new()).unwrap();
         let csv_str = String::from_utf8(out).unwrap();
 
         assert!(
@@ -209,7 +216,7 @@ mod tests {
         let ratings = vec![make_rated(438631, 9)];
 
         let mut out = Vec::new();
-        write_diary_csv(&mut out, &history, &ratings).unwrap();
+        write_diary_csv(&mut out, &history, &ratings, &HashMap::new()).unwrap();
         let lines = to_lines(out);
 
         assert_eq!(lines[1], "Dune,2021,438631,2024-03-01,4.5,No,,");
@@ -225,7 +232,7 @@ mod tests {
         )];
 
         let mut out = Vec::new();
-        write_diary_csv(&mut out, &history, &[]).unwrap();
+        write_diary_csv(&mut out, &history, &[], &HashMap::new()).unwrap();
         let lines = to_lines(out);
 
         assert_eq!(lines[1], "Blade Runner,1982,78,2024-04-01,,No,,");
@@ -272,7 +279,7 @@ mod tests {
             "2024-05-01T00:00:00.000Z",
         )];
         let mut out = Vec::new();
-        write_diary_csv(&mut out, &history, &[]).unwrap();
+        write_diary_csv(&mut out, &history, &[], &HashMap::new()).unwrap();
         let lines = to_lines(out);
         // Rewatch is the 6th field (index 5). Assert the literal substring ",No," appears.
         assert!(
@@ -295,7 +302,7 @@ mod tests {
             "2024-06-01T00:00:00.000Z",
         )];
         let mut out = Vec::new();
-        write_diary_csv(&mut out, &history, &[]).unwrap();
+        write_diary_csv(&mut out, &history, &[], &HashMap::new()).unwrap();
 
         // Parse back with csv::Reader; it must reconstruct the original string exactly.
         let mut rdr = csv::Reader::from_reader(out.as_slice());
@@ -327,7 +334,7 @@ mod tests {
             movie,
         }];
         let mut out = Vec::new();
-        write_diary_csv(&mut out, &history, &[]).unwrap();
+        write_diary_csv(&mut out, &history, &[], &HashMap::new()).unwrap();
 
         let mut rdr = csv::Reader::from_reader(out.as_slice());
         let record = rdr
@@ -347,7 +354,7 @@ mod tests {
     #[test]
     fn diary_empty_input_produces_header_only() {
         let mut out = Vec::new();
-        write_diary_csv(&mut out, &[], &[]).unwrap();
+        write_diary_csv(&mut out, &[], &[], &HashMap::new()).unwrap();
         let lines = to_lines(out);
         assert_eq!(
             lines.len(),
@@ -368,12 +375,85 @@ mod tests {
     fn diary_rated_but_not_watched_excluded() {
         let ratings = vec![make_rated(12345, 8)];
         let mut out = Vec::new();
-        write_diary_csv(&mut out, &[], &ratings).unwrap();
+        write_diary_csv(&mut out, &[], &ratings, &HashMap::new()).unwrap();
         let lines = to_lines(out);
         assert_eq!(
             lines.len(),
             1,
             "a film rated but never watched must not appear in the diary CSV"
+        );
+    }
+
+    #[test]
+    fn diary_note_populates_review_column() {
+        let history = vec![make_watched(
+            "The Matrix",
+            1999,
+            603,
+            "2024-01-15T20:30:00.000Z",
+        )];
+        let mut notes = HashMap::new();
+        notes.insert(603u64, "An absolute masterpiece.".to_string());
+
+        let mut out = Vec::new();
+        write_diary_csv(&mut out, &history, &[], &notes).unwrap();
+
+        let mut rdr = csv::Reader::from_reader(out.as_slice());
+        let record = rdr.records().next().unwrap().unwrap();
+        assert_eq!(
+            &record[7], "An absolute masterpiece.",
+            "Review column must contain note text"
+        );
+    }
+
+    #[test]
+    fn diary_review_with_commas_and_newline_round_trips() {
+        // A review that contains both a comma and an embedded newline must survive
+        // the csv crate's quoting and parse back to the exact original string.
+        let tricky_review = "Great film, loved it.\nWould watch again.";
+        let history = vec![make_watched(
+            "The Matrix",
+            1999,
+            603,
+            "2024-01-15T20:30:00.000Z",
+        )];
+        let mut notes = HashMap::new();
+        notes.insert(603u64, tricky_review.to_string());
+
+        let mut out = Vec::new();
+        write_diary_csv(&mut out, &history, &[], &notes).unwrap();
+
+        let mut rdr = csv::Reader::from_reader(out.as_slice());
+        let record = rdr
+            .records()
+            .next()
+            .expect("expected one data row")
+            .expect("csv parse error");
+        assert_eq!(
+            &record[7], tricky_review,
+            "review with commas and newline must round-trip cleanly through CSV"
+        );
+    }
+
+    #[test]
+    fn diary_film_without_note_has_empty_review_column() {
+        let history = vec![make_watched(
+            "Inception",
+            2010,
+            27205,
+            "2024-01-15T20:30:00.000Z",
+        )];
+        let mut notes = HashMap::new();
+        notes.insert(603u64, "Note for a different film".to_string());
+
+        let mut out = Vec::new();
+        write_diary_csv(&mut out, &history, &[], &notes).unwrap();
+
+        let mut rdr = csv::Reader::from_reader(out.as_slice());
+        let record = rdr.records().next().unwrap().unwrap();
+        assert_eq!(
+            &record[7], "",
+            "Review column must be empty when no note for this film"
         );
     }
 }
