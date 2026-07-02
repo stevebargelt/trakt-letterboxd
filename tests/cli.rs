@@ -89,12 +89,12 @@ fn sync_from_letterboxd_requires_auth_when_no_token() {
 }
 
 #[test]
-fn sync_to_letterboxd_exits_zero_and_prints_not_implemented() {
+fn sync_to_letterboxd_requires_auth_when_no_token() {
     authed_cmd()
         .args(["sync", "to-letterboxd"])
         .assert()
-        .success()
-        .stdout(predicate::str::contains("not yet implemented"));
+        .failure()
+        .stderr(predicate::str::contains("not authenticated").or(predicate::str::contains("auth")));
 }
 
 // ── 3. Missing credentials → non-zero exit with human-readable error ──────────
@@ -131,27 +131,33 @@ fn valid_config_file_loads_without_error() {
     writeln!(f, "trakt_client_id = \"cfg_id\"").unwrap();
     writeln!(f, "trakt_client_secret = \"cfg_secret\"").unwrap();
 
-    // Use sync (not auth) to verify config loads correctly without making HTTP calls.
+    // Config loading succeeded when the error is "not authenticated" (no token file),
+    // not a config parsing error.
     clean_cmd()
         .arg("--config")
         .arg(f.path())
         .args(["sync", "to-letterboxd"])
         .assert()
-        .success()
-        .stdout(predicate::str::contains("not yet implemented"));
+        .failure()
+        .stderr(predicate::str::contains("not authenticated").or(predicate::str::contains("auth")))
+        .stderr(predicate::str::contains("trakt_client_id").not())
+        .stderr(predicate::str::contains("config").not());
 }
 
 // ── 5. Env var overrides take effect ──────────────────────────────────────────
 
 #[test]
 fn env_var_credentials_alone_are_sufficient() {
+    // Config loads from env vars; the "not authenticated" error means config was read
+    // correctly (no credentials error) but no token file exists yet.
     clean_cmd()
         .env("TRAKT_CLIENT_ID", "env_only_id")
         .env("TRAKT_CLIENT_SECRET", "env_only_secret")
         .args(["sync", "to-letterboxd"])
         .assert()
-        .success()
-        .stdout(predicate::str::contains("not yet implemented"));
+        .failure()
+        .stderr(predicate::str::contains("not authenticated").or(predicate::str::contains("auth")))
+        .stderr(predicate::str::contains("trakt_client_id").not());
 }
 
 #[test]
@@ -160,6 +166,7 @@ fn env_vars_override_config_file_values() {
     writeln!(f, "trakt_client_id = \"file_id\"").unwrap();
     writeln!(f, "trakt_client_secret = \"file_secret\"").unwrap();
 
+    // Both config file and env vars load without a config error; auth error is expected.
     clean_cmd()
         .arg("--config")
         .arg(f.path())
@@ -167,7 +174,8 @@ fn env_vars_override_config_file_values() {
         .env("TRAKT_CLIENT_SECRET", "override_secret")
         .args(["sync", "to-letterboxd"])
         .assert()
-        .success();
+        .failure()
+        .stderr(predicate::str::contains("not authenticated").or(predicate::str::contains("auth")));
 }
 
 #[test]
@@ -176,10 +184,12 @@ fn trakt_config_file_env_var_points_to_config() {
     writeln!(f, "trakt_client_id = \"via_config_file_env\"").unwrap();
     writeln!(f, "trakt_client_secret = \"via_config_file_env_secret\"").unwrap();
 
+    // TRAKT_CONFIG_FILE env var loads the config; auth error confirms config was read.
     clean_cmd()
         .env("TRAKT_CONFIG_FILE", f.path().to_str().unwrap())
         .args(["sync", "to-letterboxd"])
         .assert()
-        .success()
-        .stdout(predicate::str::contains("not yet implemented"));
+        .failure()
+        .stderr(predicate::str::contains("not authenticated").or(predicate::str::contains("auth")))
+        .stderr(predicate::str::contains("trakt_client_id").not());
 }
