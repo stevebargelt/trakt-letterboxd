@@ -528,9 +528,11 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let dc_json = r#"{"device_code":"dc123","user_code":"ABCD","verification_url":"https://trakt.tv/activate","expires_in":0,"interval":0}"#.to_string();
         let client = MockClient::new(vec![(200, dc_json)]);
-        let err =
-            run_device_flow_inner(&client, "cid", "csec", dir.path(), &|_| {}).unwrap_err();
-        assert!(err.contains("timed out"), "expected timeout error, got: {err}");
+        let err = run_device_flow_inner(&client, "cid", "csec", dir.path(), &|_| {}).unwrap_err();
+        assert!(
+            err.contains("timed out"),
+            "expected timeout error, got: {err}"
+        );
     }
 
     #[test]
