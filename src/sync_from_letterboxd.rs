@@ -11,12 +11,21 @@ use crate::{
     trakt_write::{self, HistoryMovie, MovieId, RatingMovie, WatchlistMovie},
 };
 
+pub struct ErroredItem {
+    pub title: String,
+    pub year: u32,
+    pub reason: String,
+}
+
 pub struct SyncSummary {
     pub watched_added: u32,
+    pub watched_skipped: u32,
     pub ratings_added: u32,
+    pub ratings_skipped: u32,
     pub watchlist_added: u32,
-    pub skipped: u32,
+    pub watchlist_skipped: u32,
     pub unmatched: Vec<UnmatchedFilm>,
+    pub errored: Vec<ErroredItem>,
     pub dry_run: bool,
     pub reviews_transferred: u32,
     pub reviews_skipped_over_limit: u32,
@@ -122,7 +131,10 @@ pub fn run(
         id_map.get(&(title.to_lowercase(), year)).cloned()
     };
 
-    let mut skipped = 0u32;
+    let mut watched_skipped = 0u32;
+    let mut ratings_skipped = 0u32;
+    let mut watchlist_skipped = 0u32;
+    let mut errored: Vec<ErroredItem> = Vec::new();
 
     // --- History ---
     // Parallel vecs: movies to write and their key components for state marking.
@@ -143,7 +155,7 @@ pub fn run(
             entry.logged_date.clone()
         };
         if !force && state.contains(&watched_key(tmdb_id, &entry.name, entry.year, &date)) {
-            skipped += 1;
+            watched_skipped += 1;
             continue;
         }
         history_movies.push(HistoryMovie {
@@ -163,7 +175,7 @@ pub fn run(
         };
         let date = entry.logged_date.clone();
         if !force && state.contains(&watched_key(tmdb_id, &entry.name, entry.year, &date)) {
-            skipped += 1;
+            watched_skipped += 1;
             continue;
         }
         history_movies.push(HistoryMovie {
@@ -184,7 +196,7 @@ pub fn run(
         };
         let date = entry.logged_date.clone();
         if !force && state.contains(&rating_key(tmdb_id, &entry.name, entry.year, &date)) {
-            skipped += 1;
+            ratings_skipped += 1;
             continue;
         }
         rating_movies.push(RatingMovie {
@@ -209,7 +221,7 @@ pub fn run(
             None => continue,
         };
         if !force && state.contains(&watchlist_key(tmdb_id, &entry.name, entry.year)) {
-            skipped += 1;
+            watchlist_skipped += 1;
             continue;
         }
         watchlist_movies.push(WatchlistMovie {
@@ -313,7 +325,11 @@ pub fn run(
                         "warning: failed to create note for '{}': {e}",
                         review_entry.name
                     );
-                    reviews_skipped_over_limit += 1;
+                    errored.push(ErroredItem {
+                        title: review_entry.name.clone(),
+                        year: review_entry.year,
+                        reason: format!("note creation failed: {e}"),
+                    });
                 }
             }
         }
@@ -326,10 +342,13 @@ pub fn run(
 
     Ok(SyncSummary {
         watched_added,
+        watched_skipped,
         ratings_added,
+        ratings_skipped,
         watchlist_added,
-        skipped,
+        watchlist_skipped,
         unmatched,
+        errored,
         dry_run,
         reviews_transferred,
         reviews_skipped_over_limit,
@@ -486,8 +505,11 @@ mod tests {
         assert_eq!(summary.watched_added, 1, "1 diary entry would be added");
         assert_eq!(summary.ratings_added, 1, "1 rating entry would be added");
         assert_eq!(summary.watchlist_added, 0);
-        assert_eq!(summary.skipped, 0);
+        assert_eq!(summary.watched_skipped, 0);
+        assert_eq!(summary.ratings_skipped, 0);
+        assert_eq!(summary.watchlist_skipped, 0);
         assert!(summary.unmatched.is_empty());
+        assert!(summary.errored.is_empty());
     }
 
     #[test]
@@ -556,8 +578,11 @@ mod tests {
         assert_eq!(summary.watched_added, 1);
         assert_eq!(summary.ratings_added, 1);
         assert_eq!(summary.watchlist_added, 1);
-        assert_eq!(summary.skipped, 0);
+        assert_eq!(summary.watched_skipped, 0);
+        assert_eq!(summary.ratings_skipped, 0);
+        assert_eq!(summary.watchlist_skipped, 0);
         assert!(summary.unmatched.is_empty());
+        assert!(summary.errored.is_empty());
 
         let urls = client.post_urls();
         assert!(
@@ -626,7 +651,7 @@ mod tests {
             0,
             "already-synced item must not trigger a write"
         );
-        assert_eq!(summary.skipped, 1);
+        assert_eq!(summary.watched_skipped, 1);
         assert_eq!(summary.watched_added, 0);
     }
 
@@ -664,7 +689,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(client.post_count(), 1, "--force must re-sync the item");
-        assert_eq!(summary.skipped, 0);
+        assert_eq!(summary.watched_skipped, 0);
         assert_eq!(summary.watched_added, 1);
     }
 
@@ -796,7 +821,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(client.post_count(), 0);
-        assert_eq!(summary.skipped, 1);
+        assert_eq!(summary.watchlist_skipped, 1);
         assert_eq!(summary.watchlist_added, 0);
     }
 
@@ -902,7 +927,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            summary.skipped, 1,
+            summary.watched_skipped, 1,
             "Inception (already-synced) must be skipped"
         );
         assert_eq!(summary.watched_added, 1, "The Matrix must be added");
@@ -912,6 +937,7 @@ mod tests {
             "Ghost Film must appear in unmatched"
         );
         assert_eq!(summary.unmatched[0].title, "Ghost Film");
+        assert!(summary.errored.is_empty(), "no errors expected");
         assert_eq!(client.post_count(), 1, "exactly one write endpoint called");
     }
 
@@ -939,8 +965,11 @@ mod tests {
         assert_eq!(summary.watched_added, 0);
         assert_eq!(summary.ratings_added, 0);
         assert_eq!(summary.watchlist_added, 0);
-        assert_eq!(summary.skipped, 0);
+        assert_eq!(summary.watched_skipped, 0);
+        assert_eq!(summary.ratings_skipped, 0);
+        assert_eq!(summary.watchlist_skipped, 0);
         assert!(summary.unmatched.is_empty());
+        assert!(summary.errored.is_empty());
     }
 
     #[test]
@@ -986,9 +1015,10 @@ mod tests {
             "dry-run would-add must exclude already-synced items"
         );
         assert_eq!(
-            summary.skipped, 1,
+            summary.watched_skipped, 1,
             "already-synced item is counted as skipped even in dry-run"
         );
+        assert!(summary.errored.is_empty());
     }
 
     #[test]
@@ -1041,7 +1071,7 @@ mod tests {
 
         assert_eq!(client2.post_count(), 0, "second run must make no writes");
         assert_eq!(
-            summary2.skipped, 1,
+            summary2.watched_skipped, 1,
             "second run must skip the already-synced film"
         );
         assert_eq!(summary2.watched_added, 0);
@@ -1352,5 +1382,128 @@ mod tests {
             1,
             "only one /notes POST attempted before limit"
         );
+    }
+
+    #[test]
+    fn review_api_error_goes_to_errored_not_over_limit() {
+        // A 500 from the notes endpoint is a real failure, not an over-limit condition.
+        // It must appear in errored[], not reviews_skipped_over_limit.
+        let export_dir = TempDir::new().unwrap();
+        let data_dir = TempDir::new().unwrap();
+
+        write_csv(&export_dir, "diary.csv", DIARY_CSV);
+        write_csv(&export_dir, "reviews.csv", REVIEW_CSV);
+
+        let client = MockClient::new(
+            vec![(200, match_json("The Matrix", 1999, 481, 603))],
+            vec![
+                (201, ok_resp(1)),                                // POST /sync/history
+                (500, r#"{"error":"server error"}"#.to_string()), // POST /notes — real error
+            ],
+        );
+
+        let summary = run(
+            &client,
+            data_dir.path(),
+            "https://api.trakt.tv",
+            "token",
+            export_dir.path(),
+            false,
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(summary.reviews_transferred, 0);
+        assert_eq!(
+            summary.reviews_skipped_over_limit, 0,
+            "a 500 is not an over-limit skip"
+        );
+        assert_eq!(
+            summary.errored.len(),
+            1,
+            "a 500 from /notes must appear in errored"
+        );
+        assert_eq!(summary.errored[0].title, "The Matrix");
+        assert_eq!(summary.errored[0].year, 1999);
+        assert!(
+            summary.errored[0].reason.contains("500"),
+            "reason must mention the HTTP status: {}",
+            summary.errored[0].reason
+        );
+    }
+
+    #[test]
+    fn write_error_goes_to_errored_not_unmatched() {
+        // A film that RESOLVES successfully but whose note POST returns HTTP 500
+        // must land in errored[], NOT in unmatched[].
+        // This locks the separation: resolve failure -> unmatched; write failure -> errored.
+        let export_dir = TempDir::new().unwrap();
+        let data_dir = TempDir::new().unwrap();
+
+        write_csv(&export_dir, "diary.csv", DIARY_CSV);
+        write_csv(&export_dir, "reviews.csv", REVIEW_CSV);
+
+        // The Matrix resolves (GET returns a match), history POST succeeds,
+        // but note POST returns 500 — a genuine write error.
+        let client = MockClient::new(
+            vec![(200, match_json("The Matrix", 1999, 481, 603))],
+            vec![
+                (201, ok_resp(1)),                                  // POST /sync/history
+                (500, r#"{"error":"internal error"}"#.to_string()), // POST /notes — write error
+            ],
+        );
+
+        let summary = run(
+            &client,
+            data_dir.path(),
+            "https://api.trakt.tv",
+            "token",
+            export_dir.path(),
+            false,
+            false,
+        )
+        .unwrap();
+
+        // Write failure on a resolved film -> errored, not unmatched.
+        assert_eq!(
+            summary.errored.len(),
+            1,
+            "a 500 write error must produce exactly one errored item"
+        );
+        assert_eq!(summary.errored[0].title, "The Matrix");
+        assert!(
+            summary.unmatched.is_empty(),
+            "a resolved film that errors on write must NOT appear in unmatched"
+        );
+    }
+
+    #[test]
+    fn summary_fields_include_title_year_reason_for_unmatched() {
+        let export_dir = TempDir::new().unwrap();
+        let data_dir = TempDir::new().unwrap();
+
+        write_csv(&export_dir, "diary.csv", DIARY_CSV);
+
+        let client = MockClient::new(vec![(200, "[]".to_string())], vec![]);
+
+        let summary = run(
+            &client,
+            data_dir.path(),
+            "https://api.trakt.tv",
+            "token",
+            export_dir.path(),
+            false,
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(summary.unmatched.len(), 1);
+        assert_eq!(summary.unmatched[0].title, "The Matrix");
+        assert_eq!(summary.unmatched[0].year, 1999);
+        assert!(
+            !summary.unmatched[0].reason.is_empty(),
+            "unmatched must include a reason"
+        );
+        assert!(summary.errored.is_empty(), "no errors for unmatched film");
     }
 }

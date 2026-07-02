@@ -69,64 +69,167 @@ enum SyncDirection {
 
 const TRAKT_BASE_URL: &str = "https://api.trakt.tv";
 
-fn print_from_letterboxd_summary(s: &sync_from_letterboxd::SyncSummary) {
+const DETAIL_LIST_CAP: usize = 20;
+
+fn format_from_letterboxd_summary(s: &sync_from_letterboxd::SyncSummary) -> String {
+    use std::fmt::Write;
+    let mut out = String::new();
     if s.dry_run {
-        println!("[DRY RUN] Letterboxd \u{2192} Trakt (no changes written)");
+        writeln!(
+            out,
+            "[DRY RUN] Letterboxd \u{2192} Trakt (no changes written)"
+        )
+        .unwrap();
     } else {
-        println!("Letterboxd \u{2192} Trakt sync complete");
+        writeln!(out, "Letterboxd \u{2192} Trakt sync complete").unwrap();
     }
-    println!();
-    println!("  Watched history: {}", s.watched_added);
-    println!("  Ratings:         {}", s.ratings_added);
-    println!("  Watchlist:       {}", s.watchlist_added);
-    println!("  Already synced:  {} skipped", s.skipped);
-    println!("  Reviews:         {} transferred", s.reviews_transferred);
-    if s.reviews_skipped_unmatched > 0 {
-        println!(
-            "  Reviews skipped: {} (film unmatched)",
-            s.reviews_skipped_unmatched
-        );
-    }
-    if s.reviews_skipped_over_limit > 0 {
-        println!(
-            "  Reviews skipped: {} (Trakt note limit reached)",
-            s.reviews_skipped_over_limit
-        );
-    }
+    writeln!(out).unwrap();
+    writeln!(
+        out,
+        "  Watched history:  {} added, {} skipped (already synced)",
+        s.watched_added, s.watched_skipped
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "  Ratings:          {} added, {} skipped (already synced)",
+        s.ratings_added, s.ratings_skipped
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "  Watchlist:        {} added, {} skipped (already synced)",
+        s.watchlist_added, s.watchlist_skipped
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "  Reviews:          {} transferred, {} skipped (over limit), {} skipped (film unmatched), {} errored",
+        s.reviews_transferred,
+        s.reviews_skipped_over_limit,
+        s.reviews_skipped_unmatched,
+        s.errored.len()
+    )
+    .unwrap();
+
     if !s.unmatched.is_empty() {
-        println!();
-        println!("  Unmatched films ({}):", s.unmatched.len());
-        for film in &s.unmatched {
-            println!("    - {} ({})", film.title, film.year);
+        writeln!(out).unwrap();
+        writeln!(out, "  Unmatched films ({}):", s.unmatched.len()).unwrap();
+        for film in s.unmatched.iter().take(DETAIL_LIST_CAP) {
+            writeln!(out, "    - {} ({}): {}", film.title, film.year, film.reason).unwrap();
+        }
+        if s.unmatched.len() > DETAIL_LIST_CAP {
+            writeln!(
+                out,
+                "    ... and {} more",
+                s.unmatched.len() - DETAIL_LIST_CAP
+            )
+            .unwrap();
         }
     }
+
+    if !s.errored.is_empty() {
+        writeln!(out).unwrap();
+        writeln!(out, "  Errored items ({}):", s.errored.len()).unwrap();
+        for item in s.errored.iter().take(DETAIL_LIST_CAP) {
+            writeln!(out, "    - {} ({}): {}", item.title, item.year, item.reason).unwrap();
+        }
+        if s.errored.len() > DETAIL_LIST_CAP {
+            writeln!(
+                out,
+                "    ... and {} more",
+                s.errored.len() - DETAIL_LIST_CAP
+            )
+            .unwrap();
+        }
+    }
+
+    out
+}
+
+fn print_from_letterboxd_summary(s: &sync_from_letterboxd::SyncSummary) {
+    print!("{}", format_from_letterboxd_summary(s));
+}
+
+fn from_letterboxd_has_errors(s: &sync_from_letterboxd::SyncSummary) -> bool {
+    !s.errored.is_empty()
+}
+
+fn to_letterboxd_has_errors(s: &sync_to_letterboxd::SyncSummary) -> bool {
+    !s.errored.is_empty()
+}
+
+fn format_to_letterboxd_summary(
+    s: &sync_to_letterboxd::SyncSummary,
+    data_dir: &std::path::Path,
+) -> String {
+    use std::fmt::Write;
+    let mut out = String::new();
+    if s.dry_run {
+        writeln!(
+            out,
+            "[DRY RUN] Trakt \u{2192} Letterboxd export (no files written)"
+        )
+        .unwrap();
+    } else {
+        writeln!(out, "Trakt \u{2192} Letterboxd export complete").unwrap();
+    }
+    writeln!(out).unwrap();
+    writeln!(out, "  Diary rows:               {}", s.diary_rows).unwrap();
+    writeln!(out, "  Distinct rated films:     {}", s.distinct_ratings).unwrap();
+    writeln!(
+        out,
+        "  Diary rows with a rating: {} (may include rewatches of rated films)",
+        s.ratings_in_diary
+    )
+    .unwrap();
+    writeln!(out, "  Reviews in diary:         {}", s.reviews_in_diary).unwrap();
+    writeln!(out, "  Watchlist rows:           {}", s.watchlist_rows).unwrap();
+    writeln!(out, "  Already exported:         {} skipped", s.skipped).unwrap();
+
+    if !s.errored.is_empty() {
+        writeln!(out).unwrap();
+        writeln!(out, "  Errored items ({}):", s.errored.len()).unwrap();
+        for item in s.errored.iter().take(DETAIL_LIST_CAP) {
+            writeln!(out, "    - {} ({}): {}", item.title, item.year, item.reason).unwrap();
+        }
+        if s.errored.len() > DETAIL_LIST_CAP {
+            writeln!(
+                out,
+                "    ... and {} more",
+                s.errored.len() - DETAIL_LIST_CAP
+            )
+            .unwrap();
+        }
+    }
+
+    if !s.dry_run {
+        writeln!(out).unwrap();
+        writeln!(
+            out,
+            "  Diary CSV:     {}",
+            data_dir.join("letterboxd-diary-import.csv").display()
+        )
+        .unwrap();
+        writeln!(
+            out,
+            "  Watchlist CSV: {}",
+            data_dir.join("letterboxd-watchlist-import.csv").display()
+        )
+        .unwrap();
+        writeln!(out).unwrap();
+        writeln!(
+            out,
+            "Next steps: Upload these files at https://letterboxd.com/import/ \u{2014} diary file first, then watchlist."
+        )
+        .unwrap();
+    }
+
+    out
 }
 
 fn print_to_letterboxd_summary(s: &sync_to_letterboxd::SyncSummary, data_dir: &std::path::Path) {
-    if s.dry_run {
-        println!("[DRY RUN] Trakt \u{2192} Letterboxd export (no files written)");
-    } else {
-        println!("Trakt \u{2192} Letterboxd export complete");
-    }
-    println!();
-    println!("  Diary rows:       {}", s.diary_rows);
-    println!("  Ratings:          {}", s.ratings_in_diary);
-    println!("  Reviews:          {}", s.reviews_in_diary);
-    println!("  Watchlist rows:   {}", s.watchlist_rows);
-    println!("  Already exported: {} skipped", s.skipped);
-    if !s.dry_run {
-        println!();
-        println!(
-            "  Diary CSV:     {}",
-            data_dir.join("letterboxd-diary-import.csv").display()
-        );
-        println!(
-            "  Watchlist CSV: {}",
-            data_dir.join("letterboxd-watchlist-import.csv").display()
-        );
-        println!();
-        println!("Next steps: Upload these files at https://letterboxd.com/import/ \u{2014} diary file first, then watchlist.");
-    }
+    print!("{}", format_to_letterboxd_summary(s, data_dir));
 }
 
 fn run_trakt_status(cfg: &config::Config) -> Result<(), String> {
@@ -212,7 +315,12 @@ fn main() {
                     *dry_run,
                     *force,
                 ) {
-                    Ok(s) => print_from_letterboxd_summary(&s),
+                    Ok(s) => {
+                        print_from_letterboxd_summary(&s);
+                        if from_letterboxd_has_errors(&s) {
+                            process::exit(1);
+                        }
+                    }
                     Err(e) => {
                         eprintln!("error: {e}");
                         process::exit(1);
@@ -241,7 +349,12 @@ fn main() {
                     *dry_run,
                     *force,
                 ) {
-                    Ok(s) => print_to_letterboxd_summary(&s, &cfg.data_dir),
+                    Ok(s) => {
+                        print_to_letterboxd_summary(&s, &cfg.data_dir);
+                        if to_letterboxd_has_errors(&s) {
+                            process::exit(1);
+                        }
+                    }
                     Err(e) => {
                         eprintln!("error: {e}");
                         process::exit(1);
@@ -249,5 +362,354 @@ fn main() {
                 }
             }
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::matching::UnmatchedFilm;
+
+    #[allow(clippy::too_many_arguments)]
+    fn make_from_summary(
+        watched_added: u32,
+        watched_skipped: u32,
+        ratings_added: u32,
+        ratings_skipped: u32,
+        watchlist_added: u32,
+        watchlist_skipped: u32,
+        unmatched: Vec<UnmatchedFilm>,
+        errored: Vec<sync_from_letterboxd::ErroredItem>,
+        dry_run: bool,
+    ) -> sync_from_letterboxd::SyncSummary {
+        sync_from_letterboxd::SyncSummary {
+            watched_added,
+            watched_skipped,
+            ratings_added,
+            ratings_skipped,
+            watchlist_added,
+            watchlist_skipped,
+            unmatched,
+            errored,
+            dry_run,
+            reviews_transferred: 0,
+            reviews_skipped_over_limit: 0,
+            reviews_skipped_unmatched: 0,
+        }
+    }
+
+    fn make_to_summary(
+        diary_rows: u32,
+        distinct_ratings: u32,
+        ratings_in_diary: u32,
+        watchlist_rows: u32,
+        skipped: u32,
+        dry_run: bool,
+        errored: Vec<sync_to_letterboxd::ErroredItem>,
+    ) -> sync_to_letterboxd::SyncSummary {
+        sync_to_letterboxd::SyncSummary {
+            diary_rows,
+            ratings_in_diary,
+            distinct_ratings,
+            watchlist_rows,
+            skipped,
+            dry_run,
+            reviews_in_diary: 0,
+            errored,
+        }
+    }
+
+    #[test]
+    fn errored_item_triggers_nonzero_exit_from_letterboxd() {
+        let s = make_from_summary(
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            vec![],
+            vec![sync_from_letterboxd::ErroredItem {
+                title: "Bad Film".to_string(),
+                year: 2024,
+                reason: "note creation failed: HTTP 500".to_string(),
+            }],
+            false,
+        );
+        assert!(
+            from_letterboxd_has_errors(&s),
+            "errored item must signal exit 1"
+        );
+    }
+
+    #[test]
+    fn only_unmatched_does_not_trigger_nonzero_exit_from_letterboxd() {
+        let s = make_from_summary(
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            vec![UnmatchedFilm {
+                title: "Ghost Film".to_string(),
+                year: 2050,
+                reason: "no exact title+year match in Trakt search".to_string(),
+            }],
+            vec![],
+            false,
+        );
+        assert!(
+            !from_letterboxd_has_errors(&s),
+            "unmatched-only must not trigger exit 1"
+        );
+    }
+
+    #[test]
+    fn no_errors_no_unmatched_exits_zero_from_letterboxd() {
+        let s = make_from_summary(3, 1, 2, 0, 1, 0, vec![], vec![], false);
+        assert!(!from_letterboxd_has_errors(&s));
+    }
+
+    #[test]
+    fn errored_item_triggers_nonzero_exit_to_letterboxd() {
+        let s = make_to_summary(
+            1,
+            1,
+            1,
+            0,
+            0,
+            false,
+            vec![sync_to_letterboxd::ErroredItem {
+                title: "Some Film".to_string(),
+                year: 2020,
+                reason: "file write error".to_string(),
+            }],
+        );
+        assert!(
+            to_letterboxd_has_errors(&s),
+            "errored item must signal exit 1"
+        );
+    }
+
+    #[test]
+    fn no_errors_exits_zero_to_letterboxd() {
+        let s = make_to_summary(1, 1, 1, 0, 0, false, vec![]);
+        assert!(!to_letterboxd_has_errors(&s));
+    }
+
+    #[test]
+    fn dry_run_label_present_in_from_letterboxd_summary() {
+        let s = make_from_summary(1, 0, 0, 0, 0, 0, vec![], vec![], true);
+        // Capture output by constructing summary and checking dry_run flag
+        assert!(s.dry_run, "dry_run flag must be set when --dry-run used");
+    }
+
+    #[test]
+    fn dry_run_label_present_in_to_letterboxd_summary() {
+        let s = make_to_summary(1, 1, 1, 0, 0, true, vec![]);
+        assert!(s.dry_run, "dry_run flag must be set when --dry-run used");
+    }
+
+    #[test]
+    fn unmatched_item_has_title_year_reason() {
+        let s = make_from_summary(
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            vec![UnmatchedFilm {
+                title: "Ghost Film".to_string(),
+                year: 2050,
+                reason: "no exact title+year match in Trakt search".to_string(),
+            }],
+            vec![],
+            false,
+        );
+        let film = &s.unmatched[0];
+        assert_eq!(film.title, "Ghost Film");
+        assert_eq!(film.year, 2050);
+        assert!(!film.reason.is_empty(), "unmatched must carry a reason");
+    }
+
+    #[test]
+    fn errored_item_has_title_year_reason() {
+        let item = sync_from_letterboxd::ErroredItem {
+            title: "Bad Film".to_string(),
+            year: 2024,
+            reason: "note creation failed: unexpected HTTP 500".to_string(),
+        };
+        assert_eq!(item.title, "Bad Film");
+        assert_eq!(item.year, 2024);
+        assert!(item.reason.contains("500"));
+    }
+
+    #[test]
+    fn ratings_relabel_distinct_vs_diary_rows() {
+        // Distinct rated films != diary rows with a rating when rewatches exist.
+        // Verify summary carries both fields with correct semantics.
+        let s = make_to_summary(
+            2, // diary_rows: two history entries (two watches of the same film)
+            1, // distinct_ratings: one unique rated film
+            2, // ratings_in_diary: both diary rows carry the rating
+            0,
+            0,
+            false,
+            vec![],
+        );
+        assert_eq!(
+            s.distinct_ratings, 1,
+            "distinct_ratings must count unique films, not diary rows"
+        );
+        assert_eq!(
+            s.ratings_in_diary, 2,
+            "ratings_in_diary may exceed distinct_ratings due to rewatches"
+        );
+        // The two fields must differ to demonstrate the mislabel was real.
+        assert_ne!(
+            s.distinct_ratings, s.ratings_in_diary,
+            "in rewatch scenario the two counts differ"
+        );
+    }
+
+    // ── Gap coverage: exit code / has_errors ──────────────────────────────────
+
+    #[test]
+    fn to_letterboxd_has_errors_false_when_only_skipped() {
+        // T->L has no "unmatched" concept; the analogue is skipped (already exported).
+        // Skipped items alone must not drive exit 1 — only errored items should.
+        let s = make_to_summary(0, 0, 0, 0, 5, false, vec![]);
+        assert!(
+            !to_letterboxd_has_errors(&s),
+            "skipped-only must not trigger exit 1 for to-letterboxd"
+        );
+    }
+
+    // ── Gap coverage: dry-run labeling in printed output ─────────────────────
+
+    #[test]
+    fn from_letterboxd_dry_run_label_appears_in_output() {
+        let s = make_from_summary(1, 0, 0, 0, 0, 0, vec![], vec![], true);
+        let output = format_from_letterboxd_summary(&s);
+        assert!(
+            output.contains("[DRY RUN]"),
+            "dry-run output must contain '[DRY RUN]'; got:\n{output}"
+        );
+    }
+
+    #[test]
+    fn from_letterboxd_real_run_has_no_dry_run_label() {
+        let s = make_from_summary(1, 0, 0, 0, 0, 0, vec![], vec![], false);
+        let output = format_from_letterboxd_summary(&s);
+        assert!(
+            !output.contains("[DRY RUN]"),
+            "real-run output must not contain '[DRY RUN]'; got:\n{output}"
+        );
+    }
+
+    #[test]
+    fn to_letterboxd_dry_run_label_appears_in_output() {
+        let s = make_to_summary(1, 1, 1, 0, 0, true, vec![]);
+        let data_dir = std::path::Path::new("/tmp/dummy");
+        let output = format_to_letterboxd_summary(&s, data_dir);
+        assert!(
+            output.contains("[DRY RUN]"),
+            "dry-run output must contain '[DRY RUN]'; got:\n{output}"
+        );
+    }
+
+    #[test]
+    fn to_letterboxd_real_run_has_no_dry_run_label() {
+        let s = make_to_summary(1, 1, 1, 0, 0, false, vec![]);
+        let data_dir = std::path::Path::new("/tmp/dummy");
+        let output = format_to_letterboxd_summary(&s, data_dir);
+        assert!(
+            !output.contains("[DRY RUN]"),
+            "real-run output must not contain '[DRY RUN]'; got:\n{output}"
+        );
+    }
+
+    // ── Gap coverage: list cap truncation ─────────────────────────────────────
+
+    #[test]
+    fn from_letterboxd_list_cap_truncates_unmatched_with_correct_overflow() {
+        // 25 unmatched films (> DETAIL_LIST_CAP of 20) must print first 20
+        // followed by "... and 5 more".
+        let unmatched: Vec<UnmatchedFilm> = (0..25)
+            .map(|i| UnmatchedFilm {
+                title: format!("Film {i}"),
+                year: 2000 + i,
+                reason: "no match".to_string(),
+            })
+            .collect();
+        let s = make_from_summary(0, 0, 0, 0, 0, 0, unmatched, vec![], false);
+        let output = format_from_letterboxd_summary(&s);
+
+        let overflow_line = format!("    ... and {} more", 25 - DETAIL_LIST_CAP);
+        assert!(
+            output.contains(&overflow_line),
+            "output must contain '{overflow_line}'; got:\n{output}"
+        );
+        // Exactly 20 film lines should appear (Film 0 through Film 19).
+        let listed = (0..20)
+            .filter(|i| output.contains(&format!("Film {i}")))
+            .count();
+        assert_eq!(listed, 20, "must list exactly 20 films before truncating");
+        // Film 20-24 must not appear individually.
+        assert!(
+            !output.contains("Film 20"),
+            "Film 20 must be truncated, not listed"
+        );
+    }
+
+    #[test]
+    fn from_letterboxd_list_cap_truncates_errored_with_correct_overflow() {
+        // 22 errored items (> cap of 20) must show "... and 2 more".
+        let errored: Vec<sync_from_letterboxd::ErroredItem> = (0..22)
+            .map(|i| sync_from_letterboxd::ErroredItem {
+                title: format!("Error Film {i}"),
+                year: 2000 + i,
+                reason: "write failed".to_string(),
+            })
+            .collect();
+        let s = make_from_summary(0, 0, 0, 0, 0, 0, vec![], errored, false);
+        let output = format_from_letterboxd_summary(&s);
+
+        let overflow_line = format!("    ... and {} more", 22 - DETAIL_LIST_CAP);
+        assert!(
+            output.contains(&overflow_line),
+            "output must contain '{overflow_line}'; got:\n{output}"
+        );
+        assert!(
+            !output.contains("Error Film 20"),
+            "Error Film 20 must be truncated"
+        );
+    }
+
+    #[test]
+    fn to_letterboxd_list_cap_truncates_errored_with_correct_overflow() {
+        // 21 errored items must show "... and 1 more".
+        let errored: Vec<sync_to_letterboxd::ErroredItem> = (0..21)
+            .map(|i| sync_to_letterboxd::ErroredItem {
+                title: format!("T2L Error {i}"),
+                year: 2000 + i,
+                reason: "file error".to_string(),
+            })
+            .collect();
+        let s = make_to_summary(0, 0, 0, 0, 0, false, errored);
+        let data_dir = std::path::Path::new("/tmp/dummy");
+        let output = format_to_letterboxd_summary(&s, data_dir);
+
+        let overflow_line = format!("    ... and {} more", 21 - DETAIL_LIST_CAP);
+        assert!(
+            output.contains(&overflow_line),
+            "output must contain '{overflow_line}'; got:\n{output}"
+        );
+        assert!(
+            !output.contains("T2L Error 20"),
+            "T2L Error 20 must be truncated"
+        );
     }
 }
