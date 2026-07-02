@@ -1,9 +1,11 @@
 ---
 id: FG-6
 type: story
-status: active
+status: done
 title: "US-006: Letterboxd import CSV generator"
 created: 2026-07-02
+closed: 2026-07-02
+closed_commit: 2b3140b0cc1b17339d7df40cec805c190c9e9927
 ---
 
 **Description:** As the developer, I need to produce a Letterboxd-compatible import CSV from Trakt data so the user can upload it.
