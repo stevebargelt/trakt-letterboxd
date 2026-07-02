@@ -1,9 +1,11 @@
 ---
 id: FG-9
 type: story
-status: active
+status: done
 title: "US-009: sync from-letterboxd command (L to T)"
 created: 2026-07-02
+closed: 2026-07-02
+closed_commit: 40aee8011f582b5b713f7cd293db7123ad0b3b7a
 ---
 
 **Description:** As a user, I want to push my exported Letterboxd data into Trakt in one command.
