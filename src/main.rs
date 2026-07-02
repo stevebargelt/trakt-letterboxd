@@ -2,7 +2,9 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use std::process;
 
+mod auth;
 mod config;
+mod trakt_client;
 
 #[derive(Parser)]
 #[command(
@@ -43,7 +45,7 @@ enum SyncDirection {
 fn main() {
     let cli = Cli::parse();
 
-    let _cfg = match config::Config::load(cli.config.as_deref()) {
+    let cfg = match config::Config::load(cli.config.as_deref()) {
         Ok(cfg) => cfg,
         Err(e) => {
             eprintln!("error: {e}");
@@ -53,7 +55,19 @@ fn main() {
 
     match &cli.command {
         Command::Auth => {
-            println!("auth: not yet implemented");
+            let client = trakt_client::ReqwestClient::new();
+            match auth::run_device_flow(
+                &client,
+                &cfg.trakt_client_id,
+                &cfg.trakt_client_secret,
+                &cfg.data_dir,
+            ) {
+                Ok(_) => println!("Authorization successful."),
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    process::exit(1);
+                }
+            }
         }
         Command::Sync { direction } => match direction {
             SyncDirection::FromLetterboxd { .. } => {
