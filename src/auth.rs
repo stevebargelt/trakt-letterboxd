@@ -271,7 +271,15 @@ mod tests {
             let (status, body) = q
                 .pop_front()
                 .ok_or_else(|| "no more mock responses".to_string())?;
-            Ok(HttpResponse { status, body })
+            Ok(HttpResponse {
+                status,
+                body,
+                headers: std::collections::HashMap::new(),
+            })
+        }
+
+        fn get(&self, _url: &str, _access_token: &str) -> Result<HttpResponse, String> {
+            unreachable!("auth tests do not call GET")
         }
     }
 

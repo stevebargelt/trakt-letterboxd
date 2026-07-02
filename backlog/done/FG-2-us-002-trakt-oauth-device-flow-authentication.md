@@ -1,9 +1,11 @@
 ---
 id: FG-2
 type: story
-status: active
+status: done
 title: "US-002: Trakt OAuth device-flow authentication"
 created: 2026-07-02
+closed: 2026-07-02
+closed_commit: 9c17afa
 ---
 
 **Description:** As a user, I want to authorize the tool against my Trakt account once so it can read and write on my behalf.

@@ -5,6 +5,7 @@ use std::process;
 mod auth;
 mod config;
 mod trakt_client;
+mod trakt_read;
 
 #[derive(Parser)]
 #[command(
@@ -24,6 +25,8 @@ struct Cli {
 enum Command {
     /// Authorize with Trakt via OAuth device flow
     Auth,
+    /// Show Trakt account status: username and movie counts
+    TraktStatus,
     /// Sync between Trakt and Letterboxd
     Sync {
         #[command(subcommand)]
@@ -40,6 +43,30 @@ enum SyncDirection {
     },
     /// Generate a Letterboxd import CSV from Trakt data
     ToLetterboxd,
+}
+
+const TRAKT_BASE_URL: &str = "https://api.trakt.tv";
+
+fn run_trakt_status(cfg: &config::Config) -> Result<(), String> {
+    let client = trakt_client::ReqwestClient::new(&cfg.trakt_client_id);
+    let token = auth::get_valid_token(
+        &client,
+        &cfg.trakt_client_id,
+        &cfg.trakt_client_secret,
+        &cfg.data_dir,
+    )?;
+
+    let username = trakt_read::fetch_username(&client, TRAKT_BASE_URL, &token)?;
+    let watched = trakt_read::fetch_watched_history(&client, TRAKT_BASE_URL, &token)?;
+    let ratings = trakt_read::fetch_ratings(&client, TRAKT_BASE_URL, &token)?;
+    let watchlist = trakt_read::fetch_watchlist(&client, TRAKT_BASE_URL, &token)?;
+
+    println!("Authenticated as: {username}");
+    println!("Watched movies:   {}", watched.len());
+    println!("Rated movies:     {}", ratings.len());
+    println!("Watchlist movies: {}", watchlist.len());
+
+    Ok(())
 }
 
 fn main() {
@@ -67,6 +94,12 @@ fn main() {
                     eprintln!("error: {e}");
                     process::exit(1);
                 }
+            }
+        }
+        Command::TraktStatus => {
+            if let Err(e) = run_trakt_status(&cfg) {
+                eprintln!("error: {e}");
+                process::exit(1);
             }
         }
         Command::Sync { direction } => match direction {
