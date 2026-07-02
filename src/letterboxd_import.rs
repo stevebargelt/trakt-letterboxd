@@ -1,13 +1,10 @@
 #![allow(dead_code)]
 
+pub use crate::rating::trakt_rating_to_letterboxd;
 use crate::trakt_read::{RatedMovie, WatchedMovie, WatchlistMovie};
 use csv::Writer;
 use std::collections::HashMap;
 use std::io;
-
-pub fn trakt_rating_to_letterboxd(trakt: u8) -> f32 {
-    trakt as f32 / 2.0
-}
 
 fn truncate_to_date(ts: &str) -> &str {
     ts.split('T').next().unwrap_or(ts)

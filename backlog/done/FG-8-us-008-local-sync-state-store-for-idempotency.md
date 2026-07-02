@@ -1,9 +1,11 @@
 ---
 id: FG-8
 type: story
-status: active
+status: done
 title: "US-008: Local sync-state store for idempotency"
 created: 2026-07-02
+closed: 2026-07-02
+closed_commit: c74d4971604c871de73433c7d4cd80bef34171eb
 ---
 
 **Description:** As a user, I want repeated syncs to skip already-synced items so I don't get duplicate entries.

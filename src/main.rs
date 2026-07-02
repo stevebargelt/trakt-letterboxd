@@ -6,6 +6,8 @@ mod auth;
 mod config;
 mod letterboxd_export;
 mod letterboxd_import;
+mod matching;
+mod rating;
 mod sync_state;
 mod trakt_client;
 mod trakt_read;
