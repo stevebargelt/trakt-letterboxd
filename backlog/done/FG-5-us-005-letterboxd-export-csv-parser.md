@@ -1,9 +1,11 @@
 ---
 id: FG-5
 type: story
-status: active
+status: done
 title: "US-005: Letterboxd export CSV parser"
 created: 2026-07-02
+closed: 2026-07-02
+closed_commit: 0be34845078bb89a3526afb172bcc63bdf3dab91
 ---
 
 **Description:** As the developer, I need to read a Letterboxd data-export ZIP so its contents can be pushed to Trakt.

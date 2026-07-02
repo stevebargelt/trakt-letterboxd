@@ -5,6 +5,7 @@ use std::process;
 mod auth;
 mod config;
 mod letterboxd_export;
+mod letterboxd_import;
 mod trakt_client;
 mod trakt_read;
 mod trakt_write;
