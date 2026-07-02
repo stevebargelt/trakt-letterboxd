@@ -79,13 +79,13 @@ fn auth_attempts_device_flow_with_configured_credentials() {
 }
 
 #[test]
-fn sync_from_letterboxd_exits_zero_and_prints_not_implemented() {
-    // The path argument is required by clap but not used by the stub.
+fn sync_from_letterboxd_requires_auth_when_no_token() {
+    // Without a saved token file the command must exit non-zero with a clear auth error.
     authed_cmd()
         .args(["sync", "from-letterboxd", "."])
         .assert()
-        .success()
-        .stdout(predicate::str::contains("not yet implemented"));
+        .failure()
+        .stderr(predicate::str::contains("not authenticated").or(predicate::str::contains("auth")));
 }
 
 #[test]
