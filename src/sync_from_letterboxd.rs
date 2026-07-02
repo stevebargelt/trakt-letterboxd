@@ -7,6 +7,7 @@ use crate::{
     rating::letterboxd_rating_to_trakt,
     sync_state::{Direction, ItemRef, ItemType, SyncKey, SyncState},
     trakt_client::TraktHttpClient,
+    trakt_notes::{self, CreateNoteResult},
     trakt_write::{self, HistoryMovie, MovieId, RatingMovie, WatchlistMovie},
 };
 
@@ -17,6 +18,9 @@ pub struct SyncSummary {
     pub skipped: u32,
     pub unmatched: Vec<UnmatchedFilm>,
     pub dry_run: bool,
+    pub reviews_transferred: u32,
+    pub reviews_skipped_over_limit: u32,
+    pub reviews_skipped_unmatched: u32,
 }
 
 fn make_ids(tmdb_id: Option<u64>, imdb_id: Option<String>) -> MovieId {
@@ -57,6 +61,15 @@ fn watchlist_key(tmdb_id: Option<u64>, title: &str, year: u32) -> SyncKey {
     )
 }
 
+fn review_key(tmdb_id: Option<u64>, title: &str, year: u32, date: &str) -> SyncKey {
+    SyncKey::new(
+        Direction::LetterboxdToTrakt,
+        ItemType::Review,
+        item_ref_for(tmdb_id, title, year),
+        date,
+    )
+}
+
 pub fn run(
     client: &dyn TraktHttpClient,
     data_dir: &Path,
@@ -85,6 +98,9 @@ pub fn run(
         unique.insert((e.name.clone(), e.year));
     }
     for e in &export.watchlist {
+        unique.insert((e.name.clone(), e.year));
+    }
+    for e in &export.reviews {
         unique.insert((e.name.clone(), e.year));
     }
 
@@ -238,6 +254,76 @@ pub fn run(
         state.save(data_dir)?;
     }
 
+    // --- Reviews (best-effort) ---
+    let mut reviews_transferred = 0u32;
+    let mut reviews_skipped_over_limit = 0u32;
+    let mut reviews_skipped_unmatched = 0u32;
+    let mut hit_limit = false;
+
+    for review_entry in &export.reviews {
+        if review_entry.review.is_empty() {
+            continue;
+        }
+
+        let (tmdb_id, imdb_id) = match lookup(&review_entry.name, review_entry.year) {
+            Some(ids) => ids,
+            None => {
+                reviews_skipped_unmatched += 1;
+                continue;
+            }
+        };
+
+        let date = if !review_entry.watched_date.is_empty() {
+            review_entry.watched_date.clone()
+        } else {
+            review_entry.logged_date.clone()
+        };
+        let key = review_key(tmdb_id, &review_entry.name, review_entry.year, &date);
+
+        if !force && state.contains(&key) {
+            continue;
+        }
+
+        if hit_limit {
+            reviews_skipped_over_limit += 1;
+            continue;
+        }
+
+        if dry_run {
+            reviews_transferred += 1;
+        } else {
+            match trakt_notes::create_note(
+                client,
+                base_url,
+                access_token,
+                &review_entry.review,
+                tmdb_id,
+                imdb_id,
+            ) {
+                Ok(CreateNoteResult::Created) => {
+                    state.mark(key);
+                    reviews_transferred += 1;
+                }
+                Ok(CreateNoteResult::OverLimit) => {
+                    hit_limit = true;
+                    reviews_skipped_over_limit += 1;
+                }
+                Err(e) => {
+                    eprintln!(
+                        "warning: failed to create note for '{}': {e}",
+                        review_entry.name
+                    );
+                    reviews_skipped_over_limit += 1;
+                }
+            }
+        }
+    }
+
+    // Persist any new review state marks (best-effort).
+    if !dry_run && reviews_transferred > 0 {
+        let _ = state.save(data_dir);
+    }
+
     Ok(SyncSummary {
         watched_added,
         ratings_added,
@@ -245,6 +331,9 @@ pub fn run(
         skipped,
         unmatched,
         dry_run,
+        reviews_transferred,
+        reviews_skipped_over_limit,
+        reviews_skipped_unmatched,
     })
 }
 
@@ -956,5 +1045,312 @@ mod tests {
             "second run must skip the already-synced film"
         );
         assert_eq!(summary2.watched_added, 0);
+    }
+
+    const REVIEW_CSV: &str = "Date,Name,Year,Letterboxd URI,Rating,Rewatch,Tags,Watched Date,Review\n\
+        2024-01-15,The Matrix,1999,https://letterboxd.com/film/the-matrix/,4.5,No,,1999-03-31,\"Best film ever\"\n";
+
+    #[test]
+    fn review_attached_as_note_and_reported_transferred() {
+        let export_dir = TempDir::new().unwrap();
+        let data_dir = TempDir::new().unwrap();
+
+        write_csv(&export_dir, "diary.csv", DIARY_CSV);
+        write_csv(&export_dir, "reviews.csv", REVIEW_CSV);
+
+        let client = MockClient::new(
+            vec![(200, match_json("The Matrix", 1999, 481, 603))],
+            vec![
+                (201, ok_resp(1)),                // POST /sync/history
+                (201, r#"{"id":1}"#.to_string()), // POST /notes
+            ],
+        );
+
+        let summary = run(
+            &client,
+            data_dir.path(),
+            "https://api.trakt.tv",
+            "token",
+            export_dir.path(),
+            false,
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(
+            summary.reviews_transferred, 1,
+            "review must be reported as transferred"
+        );
+        assert_eq!(summary.reviews_skipped_over_limit, 0);
+        assert_eq!(summary.reviews_skipped_unmatched, 0);
+
+        let note_calls: Vec<String> = client
+            .post_urls()
+            .into_iter()
+            .filter(|u| u.contains("/notes"))
+            .collect();
+        assert_eq!(
+            note_calls.len(),
+            1,
+            "must POST to /notes endpoint exactly once"
+        );
+    }
+
+    #[test]
+    fn review_over_limit_reported_skipped() {
+        let export_dir = TempDir::new().unwrap();
+        let data_dir = TempDir::new().unwrap();
+
+        write_csv(&export_dir, "diary.csv", DIARY_CSV);
+        write_csv(&export_dir, "reviews.csv", REVIEW_CSV);
+
+        let client = MockClient::new(
+            vec![(200, match_json("The Matrix", 1999, 481, 603))],
+            vec![
+                (201, ok_resp(1)),                                  // POST /sync/history
+                (422, r#"{"error":"limit exceeded"}"#.to_string()), // POST /notes - over limit
+            ],
+        );
+
+        let summary = run(
+            &client,
+            data_dir.path(),
+            "https://api.trakt.tv",
+            "token",
+            export_dir.path(),
+            false,
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(summary.reviews_transferred, 0);
+        assert_eq!(
+            summary.reviews_skipped_over_limit, 1,
+            "over-limit must be reported skipped"
+        );
+        assert_eq!(summary.reviews_skipped_unmatched, 0);
+    }
+
+    #[test]
+    fn review_unmatched_film_reported_skipped() {
+        let export_dir = TempDir::new().unwrap();
+        let data_dir = TempDir::new().unwrap();
+
+        let unmatched_review = "Date,Name,Year,Letterboxd URI,Rating,Rewatch,Tags,Watched Date,Review\n\
+            2024-01-15,Unknown Film,2099,https://letterboxd.com/film/unknown-film/,,,,,Great film\n";
+        write_csv(&export_dir, "reviews.csv", unmatched_review);
+
+        // No match for Unknown Film
+        let client = MockClient::new(vec![(200, "[]".to_string())], vec![]);
+
+        let summary = run(
+            &client,
+            data_dir.path(),
+            "https://api.trakt.tv",
+            "token",
+            export_dir.path(),
+            false,
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(summary.reviews_transferred, 0);
+        assert_eq!(
+            summary.reviews_skipped_unmatched, 1,
+            "unmatched review must be reported skipped"
+        );
+        assert_eq!(summary.reviews_skipped_over_limit, 0);
+        assert_eq!(
+            client.post_count(),
+            0,
+            "no write should happen for unmatched review"
+        );
+    }
+
+    #[test]
+    fn review_dry_run_does_not_post_note() {
+        let export_dir = TempDir::new().unwrap();
+        let data_dir = TempDir::new().unwrap();
+
+        write_csv(&export_dir, "diary.csv", DIARY_CSV);
+        write_csv(&export_dir, "reviews.csv", REVIEW_CSV);
+
+        let client = MockClient::new(
+            vec![(200, match_json("The Matrix", 1999, 481, 603))],
+            vec![], // no POSTs expected in dry run
+        );
+
+        let summary = run(
+            &client,
+            data_dir.path(),
+            "https://api.trakt.tv",
+            "token",
+            export_dir.path(),
+            true, // dry_run
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(client.post_count(), 0, "dry run must not POST anything");
+        assert!(summary.dry_run);
+        assert_eq!(
+            summary.reviews_transferred, 1,
+            "dry run must report would-transfer count"
+        );
+    }
+
+    #[test]
+    fn review_already_synced_is_silently_skipped() {
+        let export_dir = TempDir::new().unwrap();
+        let data_dir = TempDir::new().unwrap();
+
+        write_csv(&export_dir, "diary.csv", DIARY_CSV);
+        write_csv(&export_dir, "reviews.csv", REVIEW_CSV);
+
+        // Pre-mark the review as already synced.
+        let mut state = SyncState::load(data_dir.path());
+        state.mark(SyncKey::new(
+            Direction::LetterboxdToTrakt,
+            ItemType::Review,
+            ItemRef::Tmdb(603),
+            "1999-03-31",
+        ));
+        state.save(data_dir.path()).unwrap();
+
+        let client = MockClient::new(
+            vec![(200, match_json("The Matrix", 1999, 481, 603))],
+            vec![(201, ok_resp(1))], // only history write, no notes write
+        );
+
+        let summary = run(
+            &client,
+            data_dir.path(),
+            "https://api.trakt.tv",
+            "token",
+            export_dir.path(),
+            false,
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(
+            summary.reviews_transferred, 0,
+            "already-synced review must be silently skipped"
+        );
+        assert_eq!(summary.reviews_skipped_over_limit, 0);
+        assert_eq!(summary.reviews_skipped_unmatched, 0);
+
+        let note_calls: Vec<String> = client
+            .post_urls()
+            .into_iter()
+            .filter(|u| u.contains("/notes"))
+            .collect();
+        assert_eq!(
+            note_calls.len(),
+            0,
+            "must not re-post an already-synced review"
+        );
+    }
+
+    #[test]
+    fn over_limit_review_does_not_abort_history_sync() {
+        // History write must complete even when the note POST hits the free-tier limit.
+        // The review section runs AFTER history/ratings/watchlist, so an over-limit
+        // response must never roll back or abort the already-persisted history.
+        let export_dir = TempDir::new().unwrap();
+        let data_dir = TempDir::new().unwrap();
+
+        write_csv(&export_dir, "diary.csv", DIARY_CSV);
+        write_csv(&export_dir, "reviews.csv", REVIEW_CSV);
+
+        // One film: The Matrix. History POST succeeds; note POST hits limit.
+        let client = MockClient::new(
+            vec![(200, match_json("The Matrix", 1999, 481, 603))],
+            vec![
+                (201, ok_resp(1)),                                  // POST /sync/history
+                (422, r#"{"error":"limit exceeded"}"#.to_string()), // POST /notes — over limit
+            ],
+        );
+
+        let summary = run(
+            &client,
+            data_dir.path(),
+            "https://api.trakt.tv",
+            "token",
+            export_dir.path(),
+            false,
+            false,
+        )
+        .unwrap(); // must NOT abort
+
+        assert_eq!(
+            summary.watched_added, 1,
+            "history sync must complete despite over-limit note rejection"
+        );
+        assert_eq!(
+            summary.reviews_skipped_over_limit, 1,
+            "over-limit review must be counted in skipped_over_limit"
+        );
+        assert_eq!(summary.reviews_transferred, 0);
+        assert!(!summary.dry_run);
+
+        // State file must exist — history was persisted before reviews were attempted.
+        assert!(
+            data_dir.path().join("sync_state.json").exists(),
+            "sync state must be saved even when a review hits the limit"
+        );
+    }
+
+    #[test]
+    fn second_review_skipped_after_over_limit() {
+        // If the first note hits the limit, subsequent reviews in the same run
+        // must be counted as skipped (not attempted).
+        let export_dir = TempDir::new().unwrap();
+        let data_dir = TempDir::new().unwrap();
+
+        let multi_review = "Date,Name,Year,Letterboxd URI,Rating,Rewatch,Tags,Watched Date,Review\n\
+            2024-01-15,The Matrix,1999,https://letterboxd.com/film/the-matrix/,4.5,No,,1999-03-31,Review one\n\
+            2024-01-16,Inception,2010,https://letterboxd.com/film/inception/,4.5,No,,2010-07-16,Review two\n";
+        write_csv(&export_dir, "reviews.csv", multi_review);
+
+        // Films sorted: Inception < The Matrix
+        let client = MockClient::new(
+            vec![
+                (200, match_json("Inception", 2010, 123, 27205)),
+                (200, match_json("The Matrix", 1999, 481, 603)),
+            ],
+            vec![
+                (422, r#"{"error":"limit"}"#.to_string()), // first note hits limit
+                                                           // no second note call expected
+            ],
+        );
+
+        let summary = run(
+            &client,
+            data_dir.path(),
+            "https://api.trakt.tv",
+            "token",
+            export_dir.path(),
+            false,
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(summary.reviews_transferred, 0);
+        assert_eq!(
+            summary.reviews_skipped_over_limit, 2,
+            "both reviews must be counted as skipped after limit is hit"
+        );
+
+        let note_calls: Vec<String> = client
+            .post_urls()
+            .into_iter()
+            .filter(|u| u.contains("/notes"))
+            .collect();
+        assert_eq!(
+            note_calls.len(),
+            1,
+            "only one /notes POST attempted before limit"
+        );
     }
 }

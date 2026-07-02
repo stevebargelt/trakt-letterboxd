@@ -12,6 +12,7 @@ mod sync_from_letterboxd;
 mod sync_state;
 mod sync_to_letterboxd;
 mod trakt_client;
+mod trakt_notes;
 mod trakt_read;
 mod trakt_write;
 
@@ -79,6 +80,19 @@ fn print_from_letterboxd_summary(s: &sync_from_letterboxd::SyncSummary) {
     println!("  Ratings:         {}", s.ratings_added);
     println!("  Watchlist:       {}", s.watchlist_added);
     println!("  Already synced:  {} skipped", s.skipped);
+    println!("  Reviews:         {} transferred", s.reviews_transferred);
+    if s.reviews_skipped_unmatched > 0 {
+        println!(
+            "  Reviews skipped: {} (film unmatched)",
+            s.reviews_skipped_unmatched
+        );
+    }
+    if s.reviews_skipped_over_limit > 0 {
+        println!(
+            "  Reviews skipped: {} (Trakt note limit reached)",
+            s.reviews_skipped_over_limit
+        );
+    }
     if !s.unmatched.is_empty() {
         println!();
         println!("  Unmatched films ({}):", s.unmatched.len());
@@ -97,6 +111,7 @@ fn print_to_letterboxd_summary(s: &sync_to_letterboxd::SyncSummary, data_dir: &s
     println!();
     println!("  Diary rows:       {}", s.diary_rows);
     println!("  Ratings:          {}", s.ratings_in_diary);
+    println!("  Reviews:          {}", s.reviews_in_diary);
     println!("  Watchlist rows:   {}", s.watchlist_rows);
     println!("  Already exported: {} skipped", s.skipped);
     if !s.dry_run {

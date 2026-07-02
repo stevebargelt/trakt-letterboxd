@@ -1,9 +1,11 @@
 ---
 id: FG-10
 type: story
-status: active
+status: done
 title: "US-010: sync to-letterboxd command (T to L)"
 created: 2026-07-02
+closed: 2026-07-02
+closed_commit: 9d32b037f9727206503aabf81f20b26731d61a53
 ---
 
 **Description:** As a user, I want to generate a Letterboxd-import CSV from my Trakt data so I can upload it.
