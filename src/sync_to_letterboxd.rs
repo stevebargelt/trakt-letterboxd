@@ -12,13 +12,21 @@ use crate::{
     },
 };
 
+pub struct ErroredItem {
+    pub title: String,
+    pub year: u32,
+    pub reason: String,
+}
+
 pub struct SyncSummary {
     pub diary_rows: u32,
     pub ratings_in_diary: u32,
+    pub distinct_ratings: u32,
     pub watchlist_rows: u32,
     pub skipped: u32,
     pub dry_run: bool,
     pub reviews_in_diary: u32,
+    pub errored: Vec<ErroredItem>,
 }
 
 fn truncate_date(ts: &str) -> &str {
@@ -61,6 +69,7 @@ pub fn run(
 ) -> Result<SyncSummary, String> {
     let mut history = fetch_watched_history(client, base_url, access_token)?;
     let ratings = fetch_ratings(client, base_url, access_token)?;
+    let distinct_ratings = ratings.len() as u32;
     let mut watchlist = fetch_watchlist(client, base_url, access_token)?;
 
     let mut state = SyncState::load(data_dir);
@@ -140,10 +149,12 @@ pub fn run(
     Ok(SyncSummary {
         diary_rows,
         ratings_in_diary,
+        distinct_ratings,
         watchlist_rows,
         skipped,
         dry_run,
         reviews_in_diary,
+        errored: Vec::new(),
     })
 }
 
@@ -842,6 +853,142 @@ mod tests {
         assert_eq!(
             summary.reviews_in_diary, 0,
             "no notes available → zero reviews in diary"
+        );
+    }
+
+    #[test]
+    fn distinct_ratings_matches_trakt_ratings_count() {
+        // distinct_ratings must equal the number of unique films rated on Trakt,
+        // even when the same film appears multiple times in history (rewatches).
+        let data_dir = TempDir::new().unwrap();
+
+        // Two history entries for The Matrix (two watches = rewatch), one rating.
+        let client = MockClient::new(vec![
+            (
+                200,
+                history_json(&[
+                    ("The Matrix", 1999, 603, "2024-01-15T20:30:00.000Z"),
+                    ("The Matrix", 1999, 603, "2022-05-10T18:00:00.000Z"),
+                ]),
+                page_headers(1),
+            ),
+            (
+                200,
+                ratings_json(&[("The Matrix", 1999, 603, 8)]),
+                page_headers(1),
+            ),
+            (200, watchlist_json(&[]), page_headers(1)),
+        ]);
+
+        let summary = run(
+            &client,
+            data_dir.path(),
+            "https://api.trakt.tv",
+            "token",
+            false,
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(
+            summary.distinct_ratings, 1,
+            "distinct_ratings must count unique rated films, not diary rows"
+        );
+        assert_eq!(
+            summary.ratings_in_diary, 2,
+            "ratings_in_diary counts diary rows with a rating (rewatch-inflated)"
+        );
+        assert_eq!(summary.diary_rows, 2, "two diary rows for two watches");
+        assert!(summary.errored.is_empty());
+    }
+
+    #[test]
+    fn two_distinct_films_one_rewatched_gives_correct_ratings_counts() {
+        // Scenario: 2 distinct rated films, one of which was rewatched.
+        //   - The Matrix: watched twice, rated 8
+        //   - Inception: watched once, rated 9
+        // Expected:
+        //   distinct_ratings = 2  (two unique films are rated)
+        //   ratings_in_diary = 3  (3 diary rows each carry a rating: 2 Matrix + 1 Inception)
+        //   diary_rows       = 3
+        // This is the key reconciliation: ratings_in_diary can exceed distinct_ratings.
+        let data_dir = TempDir::new().unwrap();
+
+        let client = MockClient::new(vec![
+            (
+                200,
+                history_json(&[
+                    ("The Matrix", 1999, 603, "2024-01-15T20:30:00.000Z"),
+                    ("The Matrix", 1999, 603, "2022-05-10T18:00:00.000Z"),
+                    ("Inception", 2010, 27205, "2010-07-16T00:00:00.000Z"),
+                ]),
+                page_headers(1),
+            ),
+            (
+                200,
+                ratings_json(&[("The Matrix", 1999, 603, 8), ("Inception", 2010, 27205, 9)]),
+                page_headers(1),
+            ),
+            (200, watchlist_json(&[]), page_headers(1)),
+            // notes endpoint — empty (no reviews)
+            (200, "[]".to_string(), page_headers(1)),
+        ]);
+
+        let summary = run(
+            &client,
+            data_dir.path(),
+            "https://api.trakt.tv",
+            "token",
+            false,
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(
+            summary.diary_rows, 3,
+            "three diary rows (Matrix x2 + Inception)"
+        );
+        assert_eq!(
+            summary.distinct_ratings, 2,
+            "distinct_ratings counts unique rated films (Matrix + Inception)"
+        );
+        assert_eq!(
+            summary.ratings_in_diary, 3,
+            "ratings_in_diary counts all diary rows that carry a rating (3)"
+        );
+        // The key invariant: ratings_in_diary can legitimately exceed distinct_ratings.
+        assert!(
+            summary.ratings_in_diary > summary.distinct_ratings,
+            "rewatch scenario: ratings_in_diary ({}) must exceed distinct_ratings ({})",
+            summary.ratings_in_diary,
+            summary.distinct_ratings
+        );
+        assert!(summary.errored.is_empty());
+    }
+
+    #[test]
+    fn errored_is_empty_for_normal_runs() {
+        let data_dir = TempDir::new().unwrap();
+
+        let client = MockClient::new(standard_responses(
+            &[("The Matrix", 1999, 603, "2024-01-15T20:30:00.000Z")],
+            &[("The Matrix", 1999, 603, 8)],
+            &[],
+        ));
+
+        let summary = run(
+            &client,
+            data_dir.path(),
+            "https://api.trakt.tv",
+            "token",
+            false,
+            false,
+        )
+        .unwrap();
+
+        assert!(
+            summary.errored.is_empty(),
+            "no errored items expected on a successful run"
         );
     }
 }
