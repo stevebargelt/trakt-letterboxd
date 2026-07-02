@@ -1,3 +1,5 @@
+use reqwest::header::{HeaderMap, HeaderValue, CONTENT_TYPE, USER_AGENT};
+
 pub struct HttpResponse {
     pub status: u16,
     pub body: String,
@@ -12,16 +14,23 @@ pub struct ReqwestClient {
 }
 
 impl ReqwestClient {
-    pub fn new() -> Self {
+    pub fn new(client_id: &str) -> Self {
+        let mut headers = HeaderMap::new();
+        headers.insert("trakt-api-version", HeaderValue::from_static("2"));
+        headers.insert(
+            "trakt-api-key",
+            HeaderValue::from_str(client_id).expect("trakt client_id must be valid ASCII"),
+        );
+        headers.insert(
+            USER_AGENT,
+            HeaderValue::from_static(concat!("trakt-letterboxd/", env!("CARGO_PKG_VERSION"))),
+        );
         ReqwestClient {
-            client: reqwest::blocking::Client::new(),
+            client: reqwest::blocking::Client::builder()
+                .default_headers(headers)
+                .build()
+                .expect("failed to build HTTP client"),
         }
-    }
-}
-
-impl Default for ReqwestClient {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -30,8 +39,7 @@ impl TraktHttpClient for ReqwestClient {
         let response = self
             .client
             .post(url)
-            .header("Content-Type", "application/json")
-            .header("trakt-api-version", "2")
+            .header(CONTENT_TYPE, "application/json")
             .body(body.to_string())
             .send()
             .map_err(|e| format!("HTTP request failed: {e}"))?;

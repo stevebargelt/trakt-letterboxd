@@ -55,7 +55,7 @@ fn main() {
 
     match &cli.command {
         Command::Auth => {
-            let client = trakt_client::ReqwestClient::new();
+            let client = trakt_client::ReqwestClient::new(&cfg.trakt_client_id);
             match auth::run_device_flow(
                 &client,
                 &cfg.trakt_client_id,
