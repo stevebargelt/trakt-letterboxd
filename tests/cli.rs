@@ -64,15 +64,18 @@ fn sync_help_lists_to_letterboxd() {
         .stdout(predicate::str::contains("to-letterboxd"));
 }
 
-// ── 2. Stubbed subcommands exit 0 and print "not yet implemented" ─────────────
+// ── 2. Subcommand smoke tests ─────────────────────────────────────────────────
 
 #[test]
-fn auth_exits_zero_and_prints_not_implemented() {
+fn auth_attempts_device_flow_with_configured_credentials() {
+    // With fake credentials the Trakt API returns 4xx; the CLI should exit
+    // non-zero with a human-readable error — not a panic.
     authed_cmd()
         .arg("auth")
         .assert()
-        .success()
-        .stdout(predicate::str::contains("not yet implemented"));
+        .failure()
+        .stderr(predicate::str::contains("device code").or(predicate::str::contains("HTTP")))
+        .stderr(predicate::str::contains("panicked at").not());
 }
 
 #[test]
@@ -128,10 +131,11 @@ fn valid_config_file_loads_without_error() {
     writeln!(f, "trakt_client_id = \"cfg_id\"").unwrap();
     writeln!(f, "trakt_client_secret = \"cfg_secret\"").unwrap();
 
+    // Use sync (not auth) to verify config loads correctly without making HTTP calls.
     clean_cmd()
         .arg("--config")
         .arg(f.path())
-        .arg("auth")
+        .args(["sync", "to-letterboxd"])
         .assert()
         .success()
         .stdout(predicate::str::contains("not yet implemented"));
@@ -144,7 +148,7 @@ fn env_var_credentials_alone_are_sufficient() {
     clean_cmd()
         .env("TRAKT_CLIENT_ID", "env_only_id")
         .env("TRAKT_CLIENT_SECRET", "env_only_secret")
-        .arg("auth")
+        .args(["sync", "to-letterboxd"])
         .assert()
         .success()
         .stdout(predicate::str::contains("not yet implemented"));
@@ -152,9 +156,6 @@ fn env_var_credentials_alone_are_sufficient() {
 
 #[test]
 fn env_vars_override_config_file_values() {
-    // Config file has one set of credentials; env vars supply different ones.
-    // The binary should succeed (if env vars didn't take effect it would still
-    // succeed using the file values, but we verify via exit-0 that the merge works).
     let mut f = tempfile::NamedTempFile::new().unwrap();
     writeln!(f, "trakt_client_id = \"file_id\"").unwrap();
     writeln!(f, "trakt_client_secret = \"file_secret\"").unwrap();
@@ -164,7 +165,7 @@ fn env_vars_override_config_file_values() {
         .arg(f.path())
         .env("TRAKT_CLIENT_ID", "override_id")
         .env("TRAKT_CLIENT_SECRET", "override_secret")
-        .arg("auth")
+        .args(["sync", "to-letterboxd"])
         .assert()
         .success();
 }
@@ -177,7 +178,7 @@ fn trakt_config_file_env_var_points_to_config() {
 
     clean_cmd()
         .env("TRAKT_CONFIG_FILE", f.path().to_str().unwrap())
-        .arg("auth")
+        .args(["sync", "to-letterboxd"])
         .assert()
         .success()
         .stdout(predicate::str::contains("not yet implemented"));

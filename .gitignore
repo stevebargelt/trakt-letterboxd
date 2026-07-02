@@ -4,3 +4,8 @@
 
 # Rust build artifacts
 /target/
+
+# Local credentials / config — NEVER commit (contains Trakt client secret)
+/config.toml
+config.local.toml
+tokens.json

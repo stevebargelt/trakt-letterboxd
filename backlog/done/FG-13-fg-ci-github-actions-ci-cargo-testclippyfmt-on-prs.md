@@ -1,9 +1,11 @@
 ---
 id: FG-13
 type: story
-status: active
+status: done
 title: "FG-CI: GitHub Actions CI (cargo test/clippy/fmt on PRs)"
 created: 2026-07-02
+closed: 2026-07-02
+closed_commit: 91fbc47
 ---
 
 **Description:** As the developer, I want CI to run on every PR and push to main so branch protection can require green checks before merge.
