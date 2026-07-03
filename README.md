@@ -110,9 +110,11 @@ Letterboxd → Trakt sync complete
   Watchlist:        5 added, 0 skipped (already synced)
   Reviews:          4 transferred, 1 skipped (over limit), 0 skipped (film unmatched), 0 errored
 
-  Unmatched films (2):
+  Near-year matches (1) — please verify:
+    - 'Coco' (year 2018) matched Trakt year 2017 — verify this is the same film
+
+  Unmatched films (1):
     - Obscure Title (1974): no exact title+year match in Trakt search
-    ...
 ```
 
 The watched-history line has three distinct counts:
@@ -219,7 +221,12 @@ To include ratings in the diary CSV, add `--include-ratings` to either invocatio
 
 **Ratings opt-in** (`--include-ratings`): the `Rating` column of the diary CSV is blank by default. Letterboxd's importer overwrites existing ratings with no undo, so ratings are excluded unless `--include-ratings` is passed explicitly.
 
-**Film matching**: TMDB ID is used as the canonical bridge — Trakt exposes it natively and Letterboxd accepts it on import. When TMDB ID is unavailable, the tool falls back to IMDb ID, then title+year. A minority of films (foreign titles, same-year remakes, very obscure releases) may go unmatched; these are listed in the run summary, not silently dropped.
+**Film matching**: TMDB ID is used as the canonical bridge — Trakt exposes it natively and Letterboxd accepts it on import. When TMDB ID is unavailable, the tool falls back to IMDb ID, then title+year using a two-pass strategy:
+
+1. **Pass 1 (exact)** — title + exact year must match. This is the authoritative path; exact matches produce no warning.
+2. **Pass 2 (year ±1 tolerance)** — only films that failed the exact match are retried with year−1 and year+1. The title must still match exactly; a different title one year apart does not match. Any match found here is flagged with a warning and listed in the run summary under **"Near-year matches — please verify"** so you can confirm the tool found the right film. This recovers arthouse titles whose festival-premiere year and wide-release year differ by one (e.g. *Coco*, *Us*).
+
+Films that fail both passes are listed in **"Unmatched films"** in the run summary and are never silently dropped.
 
 **Rating scale**: Letterboxd uses 0.5–5.0 half-stars; Trakt uses integers 1–10. Conversion is ×2 in each direction (e.g. Letterboxd 4.5 → Trakt 9, Trakt 8 → Letterboxd 4.0).
 

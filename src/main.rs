@@ -118,6 +118,27 @@ fn format_from_letterboxd_summary(s: &sync_from_letterboxd::SyncSummary) -> Stri
     )
     .unwrap();
 
+    if !s.year_tolerance_warnings.is_empty() {
+        writeln!(out).unwrap();
+        writeln!(
+            out,
+            "  Near-year matches ({}) — please verify:",
+            s.year_tolerance_warnings.len()
+        )
+        .unwrap();
+        for w in s.year_tolerance_warnings.iter().take(DETAIL_LIST_CAP) {
+            writeln!(out, "    - {w}").unwrap();
+        }
+        if s.year_tolerance_warnings.len() > DETAIL_LIST_CAP {
+            writeln!(
+                out,
+                "    ... and {} more",
+                s.year_tolerance_warnings.len() - DETAIL_LIST_CAP
+            )
+            .unwrap();
+        }
+    }
+
     if !s.unmatched.is_empty() {
         writeln!(out).unwrap();
         writeln!(out, "  Unmatched films ({}):", s.unmatched.len()).unwrap();
@@ -445,6 +466,7 @@ mod tests {
             reviews_transferred: 0,
             reviews_skipped_over_limit: 0,
             reviews_skipped_unmatched: 0,
+            year_tolerance_warnings: vec![],
         }
     }
 
@@ -681,6 +703,7 @@ mod tests {
             reviews_transferred: 0,
             reviews_skipped_over_limit: 0,
             reviews_skipped_unmatched: 0,
+            year_tolerance_warnings: vec![],
         };
         let output = format_from_letterboxd_summary(&s);
         assert!(
@@ -1055,6 +1078,35 @@ mod tests {
         assert!(
             !output.contains("Ratings omitted from CSV"),
             "ratings-omitted note must be absent when ratings_in_diary=0; got:\n{output}"
+        );
+    }
+
+    // ── FG-15: year-tolerance warning in summary ──────────────────────────────
+
+    #[test]
+    fn year_tolerance_warning_appears_in_summary_output() {
+        let mut s = make_from_summary(1, 0, 0, 0, 0, 0, vec![], vec![], false);
+        s.year_tolerance_warnings = vec![
+            "'Coco' (year 2018) matched Trakt year 2017 — verify this is the same film".to_string(),
+        ];
+        let output = format_from_letterboxd_summary(&s);
+        assert!(
+            output.contains("Near-year matches (1)"),
+            "output must show the near-year matches header; got:\n{output}"
+        );
+        assert!(
+            output.contains("Coco"),
+            "output must list the near-year matched film; got:\n{output}"
+        );
+    }
+
+    #[test]
+    fn year_tolerance_warning_absent_when_no_near_matches() {
+        let s = make_from_summary(1, 0, 0, 0, 0, 0, vec![], vec![], false);
+        let output = format_from_letterboxd_summary(&s);
+        assert!(
+            !output.contains("Near-year matches"),
+            "output must not show near-year section when there are none; got:\n{output}"
         );
     }
 }

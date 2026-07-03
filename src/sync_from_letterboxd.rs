@@ -32,6 +32,9 @@ pub struct SyncSummary {
     pub reviews_transferred: u32,
     pub reviews_skipped_over_limit: u32,
     pub reviews_skipped_unmatched: u32,
+    /// Films matched via ±1 year tolerance rather than exact year.
+    /// Each entry is a human-readable warning for the sync summary.
+    pub year_tolerance_warnings: Vec<String>,
 }
 
 fn make_ids(tmdb_id: Option<u64>, imdb_id: Option<String>) -> MovieId {
@@ -119,6 +122,11 @@ pub fn run(
     film_list.sort();
 
     let (resolved, unmatched) = resolve_films(client, base_url, access_token, &film_list)?;
+
+    let year_tolerance_warnings: Vec<String> = resolved
+        .iter()
+        .filter_map(|f| f.year_tolerance_warning.clone())
+        .collect();
 
     // Build lookup: (title_lowercase, year) → (tmdb_id, imdb_id)
     let mut id_map: HashMap<(String, u32), (Option<u64>, Option<String>)> = HashMap::new();
@@ -375,6 +383,7 @@ pub fn run(
         reviews_transferred,
         reviews_skipped_over_limit,
         reviews_skipped_unmatched,
+        year_tolerance_warnings,
     })
 }
 
@@ -751,8 +760,16 @@ mod tests {
 
         write_csv(&export_dir, "diary.csv", DIARY_CSV);
 
-        // No match for The Matrix.
-        let client = MockClient::new(vec![(200, "[]".to_string()), empty_history()], vec![]);
+        // No match for The Matrix in pass 1 or either adjacent-year pass.
+        let client = MockClient::new(
+            vec![
+                (200, "[]".to_string()), // pass 1: years=1999 → no match
+                (200, "[]".to_string()), // pass 2: years=1998 → no match
+                (200, "[]".to_string()), // pass 2: years=2000 → no match
+                empty_history(),
+            ],
+            vec![],
+        );
 
         let summary = run(
             &client,
@@ -907,8 +924,17 @@ mod tests {
         );
 
         // Trakt returns the accented "Amélie" — does NOT match the unaccented "Amelie".
+        // Adjacent-year passes also return a title mismatch, so Amelie stays unmatched.
         let trakt_resp = r#"[{"type":"movie","score":1000.0,"movie":{"title":"Amélie","year":2001,"ids":{"trakt":123,"slug":"amelie","imdb":"tt0211915","tmdb":194}}}]"#;
-        let client = MockClient::new(vec![(200, trakt_resp.to_string()), empty_history()], vec![]);
+        let client = MockClient::new(
+            vec![
+                (200, trakt_resp.to_string()), // pass 1: years=2001 → Amélie (title mismatch)
+                (200, "[]".to_string()),       // pass 2: years=2000 → no match
+                (200, "[]".to_string()),       // pass 2: years=2002 → no match
+                empty_history(),
+            ],
+            vec![],
+        );
 
         let summary = run(
             &client,
@@ -968,12 +994,14 @@ mod tests {
         ));
         state.save(data_dir.path()).unwrap();
 
-        // GET responses in sorted resolve order: Ghost Film → [] , Inception → match, The Matrix → match.
+        // GET responses: pass 1 for all three films, then pass 2 adjacent-year for Ghost Film.
         let client = MockClient::new(
             vec![
-                (200, "[]".to_string()),
-                (200, match_json("Inception", 2010, 123, 27205)),
-                (200, match_json("The Matrix", 1999, 481, 603)),
+                (200, "[]".to_string()), // pass 1: Ghost Film → no match
+                (200, match_json("Inception", 2010, 123, 27205)), // pass 1: Inception → match
+                (200, match_json("The Matrix", 1999, 481, 603)), // pass 1: The Matrix → match
+                (200, "[]".to_string()), // pass 2: Ghost Film year-1 (2049)
+                (200, "[]".to_string()), // pass 2: Ghost Film year+1 (2051)
                 empty_history(),
             ],
             vec![(201, ok_resp(1))], // one write: add_to_history for The Matrix
@@ -1250,8 +1278,16 @@ mod tests {
             2024-01-15,Unknown Film,2099,https://letterboxd.com/film/unknown-film/,,,,,Great film\n";
         write_csv(&export_dir, "reviews.csv", unmatched_review);
 
-        // No match for Unknown Film.
-        let client = MockClient::new(vec![(200, "[]".to_string()), empty_history()], vec![]);
+        // No match for Unknown Film in any pass.
+        let client = MockClient::new(
+            vec![
+                (200, "[]".to_string()), // pass 1: years=2099 → no match
+                (200, "[]".to_string()), // pass 2: years=2098 → no match
+                (200, "[]".to_string()), // pass 2: years=2100 → no match
+                empty_history(),
+            ],
+            vec![],
+        );
 
         let summary = run(
             &client,
@@ -1580,7 +1616,15 @@ mod tests {
 
         write_csv(&export_dir, "diary.csv", DIARY_CSV);
 
-        let client = MockClient::new(vec![(200, "[]".to_string()), empty_history()], vec![]);
+        let client = MockClient::new(
+            vec![
+                (200, "[]".to_string()), // pass 1: years=1999 → no match
+                (200, "[]".to_string()), // pass 2: years=1998 → no match
+                (200, "[]".to_string()), // pass 2: years=2000 → no match
+                empty_history(),
+            ],
+            vec![],
+        );
 
         let summary = run(
             &client,
@@ -1881,5 +1925,213 @@ mod tests {
                 .any(|b| b.contains("2019-05-30T00:00:00.000Z")),
             "Parasite (already synced) must not appear in any POST body"
         );
+    }
+
+    // ── FG-15: year-tolerance warning propagation through run() ──────────────
+
+    #[test]
+    fn year_tolerance_match_populates_year_tolerance_warnings_in_summary() {
+        // Diary has "Coco" listed as year 2018. Trakt has it under 2017 (festival year).
+        // Pass 1 (exact years=2018) → no match.
+        // Pass 2 (years=2017) → match → run() must populate year_tolerance_warnings.
+        let export_dir = TempDir::new().unwrap();
+        let data_dir = TempDir::new().unwrap();
+
+        write_csv(
+            &export_dir,
+            "diary.csv",
+            "Date,Name,Year,Letterboxd URI,Rating,Rewatch,Tags,Watched Date\n\
+            2024-01-15,Coco,2018,https://letterboxd.com/film/coco/,,,,2018-01-15\n",
+        );
+
+        let coco_trakt_json = match_json("Coco", 2017, 100, 354859);
+        let client = MockClient::new(
+            vec![
+                (200, "[]".to_string()), // pass 1: years=2018 → no match
+                (200, coco_trakt_json),  // pass 2: years=2017 → match
+                empty_history(),
+            ],
+            vec![(201, ok_resp(1))],
+        );
+
+        let summary = run(
+            &client,
+            data_dir.path(),
+            "https://api.trakt.tv",
+            "token",
+            export_dir.path(),
+            false,
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(
+            summary.year_tolerance_warnings.len(),
+            1,
+            "year-tolerance match must populate year_tolerance_warnings; got {:?}",
+            summary.year_tolerance_warnings
+        );
+        let warn = &summary.year_tolerance_warnings[0];
+        assert!(
+            warn.contains("Coco"),
+            "warning must mention the film title; got: {warn}"
+        );
+        assert!(
+            warn.contains("2017") && warn.contains("2018"),
+            "warning must mention both LB year (2018) and Trakt year (2017); got: {warn}"
+        );
+        assert!(
+            summary.unmatched.is_empty(),
+            "near-year matched film must not appear in unmatched"
+        );
+        assert_eq!(
+            summary.watched_added, 1,
+            "matched film must be added to history"
+        );
+    }
+
+    #[test]
+    fn year_tolerance_plus_one_match_populates_year_tolerance_warnings_in_summary() {
+        // Diary has "Parasite" listed as year 2018. Trakt has it under 2019.
+        // Pass 1 (years=2018) → no match.
+        // Pass 2 (years=2017) → no match.
+        // Pass 2 (years=2019) → match.
+        let export_dir = TempDir::new().unwrap();
+        let data_dir = TempDir::new().unwrap();
+
+        write_csv(
+            &export_dir,
+            "diary.csv",
+            "Date,Name,Year,Letterboxd URI,Rating,Rewatch,Tags,Watched Date\n\
+            2024-01-15,Parasite,2018,https://letterboxd.com/film/parasite/,,,,2018-05-21\n",
+        );
+
+        let parasite_trakt_json = match_json("Parasite", 2019, 456, 496243);
+        let client = MockClient::new(
+            vec![
+                (200, "[]".to_string()),    // pass 1: years=2018 → no match
+                (200, "[]".to_string()),    // pass 2: years=2017 → no match
+                (200, parasite_trakt_json), // pass 2: years=2019 → match
+                empty_history(),
+            ],
+            vec![(201, ok_resp(1))],
+        );
+
+        let summary = run(
+            &client,
+            data_dir.path(),
+            "https://api.trakt.tv",
+            "token",
+            export_dir.path(),
+            false,
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(
+            summary.year_tolerance_warnings.len(),
+            1,
+            "year+1 tolerance match must populate year_tolerance_warnings"
+        );
+        let warn = &summary.year_tolerance_warnings[0];
+        assert!(
+            warn.contains("2019") && warn.contains("2018"),
+            "warning must mention both LB year (2018) and Trakt year (2019); got: {warn}"
+        );
+        assert!(summary.unmatched.is_empty());
+        assert_eq!(summary.watched_added, 1);
+    }
+
+    #[test]
+    fn exact_year_match_leaves_year_tolerance_warnings_empty() {
+        // An exact title+year match must never populate year_tolerance_warnings.
+        let export_dir = TempDir::new().unwrap();
+        let data_dir = TempDir::new().unwrap();
+
+        write_csv(&export_dir, "diary.csv", DIARY_CSV); // The Matrix 1999
+
+        let client = MockClient::new(
+            vec![
+                (200, match_json("The Matrix", 1999, 481, 603)), // pass 1: exact match
+                empty_history(),
+            ],
+            vec![(201, ok_resp(1))],
+        );
+
+        let summary = run(
+            &client,
+            data_dir.path(),
+            "https://api.trakt.tv",
+            "token",
+            export_dir.path(),
+            false,
+            false,
+        )
+        .unwrap();
+
+        assert!(
+            summary.year_tolerance_warnings.is_empty(),
+            "exact-year match must not produce any year_tolerance_warnings; got: {:?}",
+            summary.year_tolerance_warnings
+        );
+        assert_eq!(summary.watched_added, 1);
+        assert!(summary.unmatched.is_empty());
+    }
+
+    #[test]
+    fn different_title_adjacent_year_goes_to_unmatched_not_year_tolerance_match() {
+        // False-positive guard at the integration level:
+        // "Original Film" (LB year 2018) — pass 1 returns [], adjacent passes return
+        // "Sequel Film" at 2017 and 2019. Different title → must NOT match;
+        // must land in unmatched with empty year_tolerance_warnings.
+        let export_dir = TempDir::new().unwrap();
+        let data_dir = TempDir::new().unwrap();
+
+        write_csv(
+            &export_dir,
+            "diary.csv",
+            "Date,Name,Year,Letterboxd URI,Rating,Rewatch,Tags,Watched Date\n\
+            2024-01-15,Original Film,2018,https://letterboxd.com/film/original-film/,,,,2018-01-15\n",
+        );
+
+        let sequel_2017 = match_json("Sequel Film", 2017, 10, 100);
+        let sequel_2019 = match_json("Sequel Film", 2019, 11, 101);
+        let client = MockClient::new(
+            vec![
+                (200, "[]".to_string()), // pass 1: years=2018 → no match
+                (200, sequel_2017),      // pass 2: years=2017 → wrong title, no match
+                (200, sequel_2019),      // pass 2: years=2019 → wrong title, no match
+                empty_history(),
+            ],
+            vec![],
+        );
+
+        let summary = run(
+            &client,
+            data_dir.path(),
+            "https://api.trakt.tv",
+            "token",
+            export_dir.path(),
+            false,
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(
+            client.post_count(),
+            0,
+            "different-title adjacent-year must not trigger any write"
+        );
+        assert_eq!(
+            summary.unmatched.len(),
+            1,
+            "different-title adjacent-year must land in unmatched"
+        );
+        assert_eq!(summary.unmatched[0].title, "Original Film");
+        assert!(
+            summary.year_tolerance_warnings.is_empty(),
+            "no year_tolerance_warnings for a false-positive adjacency result"
+        );
+        assert_eq!(summary.watched_added, 0);
     }
 }

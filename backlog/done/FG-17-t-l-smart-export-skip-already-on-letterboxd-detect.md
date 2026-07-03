@@ -1,9 +1,11 @@
 ---
 id: FG-17
 type: story
-status: active
+status: done
 title: "T->L smart export: skip already-on-Letterboxd + detect bulk-date clusters"
 created: 2026-07-03
+closed: 2026-07-03
+closed_commit: a2f565c
 ---
 
 **Description:** As a user with an existing Letterboxd library, I want `sync to-letterboxd` to produce an import CSV that only ADDS value (net-new films + date-enrichment) and does not plant junk dates or overwrite good data, so I can import it safely without manual curation.

@@ -31,6 +31,8 @@ pub struct ResolvedFilm {
     pub title: String,
     pub year: u32,
     pub ids: ResolvedIds,
+    /// Set when the film was matched by ±1 year tolerance rather than exact year.
+    pub year_tolerance_warning: Option<String>,
 }
 
 #[derive(Debug)]
@@ -117,10 +119,41 @@ pub fn search_movie_by_title_year(
     }))
 }
 
+/// For a film that failed exact-year search, tries year-1 then year+1 (same
+/// title required). Returns `Some((ids, matched_year))` on the first hit.
+fn try_adjacent_year_match(
+    client: &dyn TraktHttpClient,
+    base_url: &str,
+    access_token: &str,
+    title: &str,
+    year: u32,
+) -> Result<Option<(ResolvedIds, u32)>, String> {
+    let adj_years: Vec<u32> = {
+        let mut v = Vec::with_capacity(2);
+        if year > 0 {
+            v.push(year - 1);
+        }
+        v.push(year + 1);
+        v
+    };
+    for adj in adj_years {
+        if let Some(ids) = search_movie_by_title_year(client, base_url, access_token, title, adj)? {
+            return Ok(Some((ids, adj)));
+        }
+    }
+    Ok(None)
+}
+
 /// Resolves a batch of (title, year) pairs against Trakt. Returns a list of
 /// successfully resolved films and a list of unmatched films (with reasons).
 /// Network errors are returned as Err; "no match" is not an error — it goes
 /// into the unmatched list so the caller (FG-9) can report them.
+///
+/// Two-pass strategy:
+///   1. Exact title+year match (authoritative).
+///   2. For films with no exact match, retry with year ±1 on an identical
+///      (case-normalized) title. A near-year match is returned with
+///      `year_tolerance_warning` set so the caller can surface it visibly.
 pub fn resolve_films(
     client: &dyn TraktHttpClient,
     base_url: &str,
@@ -128,15 +161,37 @@ pub fn resolve_films(
     films: &[(String, u32)],
 ) -> Result<(Vec<ResolvedFilm>, Vec<UnmatchedFilm>), String> {
     let mut matched = Vec::new();
-    let mut unmatched = Vec::new();
+    let mut exact_misses: Vec<(String, u32)> = Vec::new();
 
+    // Pass 1: exact year match.
     for (title, year) in films {
         match search_movie_by_title_year(client, base_url, access_token, title, *year)? {
             Some(ids) => matched.push(ResolvedFilm {
                 title: title.clone(),
                 year: *year,
                 ids,
+                year_tolerance_warning: None,
             }),
+            None => exact_misses.push((title.clone(), *year)),
+        }
+    }
+
+    // Pass 2: ±1 year tolerance, only for exact-miss films.
+    let mut unmatched = Vec::new();
+    for (title, year) in &exact_misses {
+        match try_adjacent_year_match(client, base_url, access_token, title, *year)? {
+            Some((ids, matched_year)) => {
+                let warning = format!(
+                    "'{}' (year {}) matched Trakt year {} — verify this is the same film",
+                    title, year, matched_year
+                );
+                matched.push(ResolvedFilm {
+                    title: title.clone(),
+                    year: *year,
+                    ids,
+                    year_tolerance_warning: Some(warning),
+                });
+            }
             None => unmatched.push(UnmatchedFilm {
                 title: title.clone(),
                 year: *year,
@@ -337,8 +392,13 @@ mod tests {
     #[test]
     fn resolve_films_separates_matched_and_unmatched() {
         let matrix_json = one_result("The Matrix", 1999, 481, 603, "tt0133093");
-        // Second film: no results.
-        let client = MockClient::new(vec![(200, &matrix_json), (200, "[]")]);
+        // Second film: no results in first pass or adjacent-year passes.
+        let client = MockClient::new(vec![
+            (200, &matrix_json), // pass 1: The Matrix → match
+            (200, "[]"),         // pass 1: Ghost Film XYZ → no match
+            (200, "[]"),         // pass 2: Ghost Film XYZ year-1 (2049) → no match
+            (200, "[]"),         // pass 2: Ghost Film XYZ year+1 (2051) → no match
+        ]);
         let films = vec![
             ("The Matrix".to_string(), 1999u32),
             ("Ghost Film XYZ".to_string(), 2050u32),
@@ -384,9 +444,11 @@ mod tests {
         let matrix_json = one_result("The Matrix", 1999, 481, 603, "tt0133093");
         let inception_json = one_result("Inception", 2010, 123, 27205, "tt1375666");
         let client = MockClient::new(vec![
-            (200, &matrix_json),
-            (200, "[]"),
-            (200, &inception_json),
+            (200, &matrix_json),    // pass 1: The Matrix → match
+            (200, "[]"),            // pass 1: Ghost Film XYZ → no match
+            (200, &inception_json), // pass 1: Inception → match
+            (200, "[]"),            // pass 2: Ghost Film XYZ year-1 (2049) → no match
+            (200, "[]"),            // pass 2: Ghost Film XYZ year+1 (2051) → no match
         ]);
         let films = vec![
             ("The Matrix".to_string(), 1999u32),
@@ -468,9 +530,8 @@ mod tests {
 
     #[test]
     fn empty_title_goes_to_unmatched_without_panic() {
-        // Current behavior: makes an API call with an empty query param and
-        // returns unmatched when no exact title match is found. No panic.
-        let client = MockClient::new(vec![(200, "[]")]);
+        // Makes an API call with an empty query param; no adjacent-year hits either.
+        let client = MockClient::new(vec![(200, "[]"), (200, "[]"), (200, "[]")]);
         let films = vec![("".to_string(), 2000u32)];
         let (matched, unmatched) =
             resolve_films(&client, "https://api.trakt.tv", "token", &films).unwrap();
@@ -480,9 +541,8 @@ mod tests {
 
     #[test]
     fn whitespace_only_title_goes_to_unmatched_without_panic() {
-        // Whitespace-only title: spaces are encoded (%20) but yield no exact
-        // title match → unmatched. No panic.
-        let client = MockClient::new(vec![(200, "[]")]);
+        // Spaces are encoded (%20) but yield no exact title match or adjacent-year hit.
+        let client = MockClient::new(vec![(200, "[]"), (200, "[]"), (200, "[]")]);
         let films = vec![("   ".to_string(), 2000u32)];
         let (matched, unmatched) =
             resolve_films(&client, "https://api.trakt.tv", "token", &films).unwrap();
@@ -514,5 +574,99 @@ mod tests {
             "duplicates each resolve independently — no silent dedup"
         );
         assert!(unmatched.is_empty());
+    }
+
+    // ── FG-15: year-tolerance matching ────────────────────────────────────────
+
+    #[test]
+    fn resolve_films_year_minus_one_falls_back_to_near_match() {
+        // LB says 2018; Trakt has it under 2017 (festival premiere year).
+        // Pass 1 (exact, years=2018) returns [].
+        // Pass 2 (year-1, years=2017) returns the film → near-year match.
+        let hit_json = one_result("Some Film", 2017, 1, 999, "tt0000001");
+        let client = MockClient::new(vec![
+            (200, "[]"),      // pass 1: years=2018 → no match
+            (200, &hit_json), // pass 2: years=2017 → match
+        ]);
+        let films = vec![("Some Film".to_string(), 2018u32)];
+        let (matched, unmatched) =
+            resolve_films(&client, "https://api.trakt.tv", "token", &films).unwrap();
+        assert_eq!(matched.len(), 1, "near-year film must be matched");
+        assert!(
+            unmatched.is_empty(),
+            "matched film must not appear in unmatched"
+        );
+        assert_eq!(matched[0].ids.tmdb_id, Some(999));
+        assert!(
+            matched[0].year_tolerance_warning.is_some(),
+            "near-year match must carry a warning"
+        );
+        let warn = matched[0].year_tolerance_warning.as_deref().unwrap();
+        assert!(
+            warn.contains("2017") && warn.contains("2018"),
+            "warning must mention both years: {warn}"
+        );
+    }
+
+    #[test]
+    fn resolve_films_year_plus_one_falls_back_to_near_match() {
+        // LB says 2017; Trakt has it under 2018 (wide-release year).
+        // Pass 1 (exact, years=2017) returns [].
+        // Pass 2 (year-1, years=2016) returns [] — nothing there.
+        // Pass 2 (year+1, years=2018) returns the film → near-year match.
+        let hit_json = one_result("Some Film", 2018, 2, 888, "tt0000002");
+        let client = MockClient::new(vec![
+            (200, "[]"),      // pass 1: years=2017 → no match
+            (200, "[]"),      // pass 2: years=2016 → no match
+            (200, &hit_json), // pass 2: years=2018 → match
+        ]);
+        let films = vec![("Some Film".to_string(), 2017u32)];
+        let (matched, unmatched) =
+            resolve_films(&client, "https://api.trakt.tv", "token", &films).unwrap();
+        assert_eq!(matched.len(), 1, "near-year film must be matched");
+        assert!(unmatched.is_empty());
+        assert_eq!(matched[0].ids.tmdb_id, Some(888));
+        assert!(matched[0].year_tolerance_warning.is_some());
+        let warn = matched[0].year_tolerance_warning.as_deref().unwrap();
+        assert!(
+            warn.contains("2018") && warn.contains("2017"),
+            "warning must mention both years: {warn}"
+        );
+    }
+
+    #[test]
+    fn resolve_films_year_tolerance_different_title_no_false_match() {
+        // "Original Film" (2018): exact pass fails. Adjacent-year passes return
+        // "Sequel Film" at year 2017 and 2019 — different title, must NOT match.
+        let sequel_2017 = one_result("Sequel Film", 2017, 10, 100, "tt0000010");
+        let sequel_2019 = one_result("Sequel Film", 2019, 11, 101, "tt0000011");
+        let client = MockClient::new(vec![
+            (200, "[]"),         // pass 1: years=2018 → no match
+            (200, &sequel_2017), // pass 2: years=2017 → wrong title, no match
+            (200, &sequel_2019), // pass 2: years=2019 → wrong title, no match
+        ]);
+        let films = vec![("Original Film".to_string(), 2018u32)];
+        let (matched, unmatched) =
+            resolve_films(&client, "https://api.trakt.tv", "token", &films).unwrap();
+        assert!(
+            matched.is_empty(),
+            "different-title adjacent-year must NOT match"
+        );
+        assert_eq!(unmatched.len(), 1, "must land in unmatched");
+        assert_eq!(unmatched[0].title, "Original Film");
+    }
+
+    #[test]
+    fn resolve_films_exact_match_has_no_warning() {
+        // An exact-year match must never carry a year_tolerance_warning.
+        let json = one_result("The Matrix", 1999, 481, 603, "tt0133093");
+        let client = MockClient::new(vec![(200, &json)]);
+        let films = vec![("The Matrix".to_string(), 1999u32)];
+        let (matched, _) = resolve_films(&client, "https://api.trakt.tv", "token", &films).unwrap();
+        assert_eq!(matched.len(), 1);
+        assert!(
+            matched[0].year_tolerance_warning.is_none(),
+            "exact-year match must not carry a warning"
+        );
     }
 }
