@@ -1,9 +1,11 @@
 ---
 id: FG-18
 type: story
-status: active
+status: done
 title: "bug: T->L tells users to upload the watchlist CSV to /import (marks it watched)"
 created: 2026-07-03
+closed: 2026-07-03
+closed_commit: 620e0f4
 ---
 
 **Description:** The `sync to-letterboxd` summary and README instruct users to upload BOTH generated CSVs at https://letterboxd.com/import. That is WRONG for the watchlist file: the main import page marks all films WATCHED, so following the instruction would mark every want-to-watch film as watched instead of adding it to the watchlist.

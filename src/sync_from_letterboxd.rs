@@ -8,6 +8,7 @@ use crate::{
     sync_state::{Direction, ItemRef, ItemType, SyncKey, SyncState},
     trakt_client::TraktHttpClient,
     trakt_notes::{self, CreateNoteResult},
+    trakt_read,
     trakt_write::{self, HistoryMovie, MovieId, RatingMovie, WatchlistMovie},
 };
 
@@ -19,6 +20,7 @@ pub struct ErroredItem {
 
 pub struct SyncSummary {
     pub watched_added: u32,
+    pub watched_on_trakt: u32,
     pub watched_skipped: u32,
     pub ratings_added: u32,
     pub ratings_skipped: u32,
@@ -131,6 +133,13 @@ pub fn run(
         id_map.get(&(title.to_lowercase(), year)).cloned()
     };
 
+    let trakt_history = trakt_read::fetch_watched_history(client, base_url, access_token)?;
+    let trakt_watched_ids: HashSet<u64> = trakt_history
+        .into_iter()
+        .filter_map(|m| m.movie.tmdb_id)
+        .collect();
+
+    let mut watched_on_trakt = 0u32;
     let mut watched_skipped = 0u32;
     let mut ratings_skipped = 0u32;
     let mut watchlist_skipped = 0u32;
@@ -149,6 +158,12 @@ pub fn run(
             Some(ids) => ids,
             None => continue,
         };
+        if let Some(id) = tmdb_id {
+            if trakt_watched_ids.contains(&id) {
+                watched_on_trakt += 1;
+                continue;
+            }
+        }
         let date = if !entry.watched_date.is_empty() {
             entry.watched_date.clone()
         } else {
@@ -173,6 +188,12 @@ pub fn run(
             Some(ids) => ids,
             None => continue,
         };
+        if let Some(id) = tmdb_id {
+            if trakt_watched_ids.contains(&id) {
+                watched_on_trakt += 1;
+                continue;
+            }
+        }
         let date = entry.logged_date.clone();
         if !force && state.contains(&watched_key(tmdb_id, &entry.name, entry.year, &date)) {
             watched_skipped += 1;
@@ -342,6 +363,7 @@ pub fn run(
 
     Ok(SyncSummary {
         watched_added,
+        watched_on_trakt,
         watched_skipped,
         ratings_added,
         ratings_skipped,
@@ -466,6 +488,22 @@ mod tests {
         format!(r#"{{"added":{{"movies":{added}}},"not_found":{{"movies":[]}}}}"#)
     }
 
+    fn empty_history() -> (u16, String) {
+        (200, "[]".to_string())
+    }
+
+    fn trakt_history_json(tmdb_ids: &[u64]) -> (u16, String) {
+        let entries: Vec<String> = tmdb_ids
+            .iter()
+            .map(|id| {
+                format!(
+                    r#"{{"watched_at":"2024-01-01T00:00:00.000Z","movie":{{"title":"Film","year":2000,"ids":{{"trakt":1,"slug":"s","imdb":"tt1","tmdb":{id}}}}}}}"#
+                )
+            })
+            .collect();
+        (200, format!("[{}]", entries.join(",")))
+    }
+
     const DIARY_CSV: &str = "Date,Name,Year,Letterboxd URI,Rating,Rewatch,Tags,Watched Date\n\
         2024-01-15,The Matrix,1999,https://letterboxd.com/film/the-matrix/,4.5,No,,1999-03-31\n";
 
@@ -485,7 +523,10 @@ mod tests {
 
         // 1 unique film (diary + ratings deduplicate to The Matrix).
         let client = MockClient::new(
-            vec![(200, match_json("The Matrix", 1999, 481, 603))],
+            vec![
+                (200, match_json("The Matrix", 1999, 481, 603)),
+                empty_history(),
+            ],
             vec![], // no POSTs
         );
 
@@ -520,7 +561,10 @@ mod tests {
         write_csv(&export_dir, "diary.csv", DIARY_CSV);
 
         let client = MockClient::new(
-            vec![(200, match_json("The Matrix", 1999, 481, 603))],
+            vec![
+                (200, match_json("The Matrix", 1999, 481, 603)),
+                empty_history(),
+            ],
             vec![],
         );
 
@@ -555,6 +599,7 @@ mod tests {
             vec![
                 (200, match_json("Dune", 2021, 999, 438631)),
                 (200, match_json("The Matrix", 1999, 481, 603)),
+                empty_history(),
             ],
             vec![
                 (201, ok_resp(1)), // add_to_history
@@ -631,7 +676,10 @@ mod tests {
         state.save(data_dir.path()).unwrap();
 
         let client = MockClient::new(
-            vec![(200, match_json("The Matrix", 1999, 481, 603))],
+            vec![
+                (200, match_json("The Matrix", 1999, 481, 603)),
+                empty_history(),
+            ],
             vec![], // no writes expected
         );
 
@@ -673,7 +721,10 @@ mod tests {
         state.save(data_dir.path()).unwrap();
 
         let client = MockClient::new(
-            vec![(200, match_json("The Matrix", 1999, 481, 603))],
+            vec![
+                (200, match_json("The Matrix", 1999, 481, 603)),
+                empty_history(),
+            ],
             vec![(201, ok_resp(1))],
         );
 
@@ -701,7 +752,7 @@ mod tests {
         write_csv(&export_dir, "diary.csv", DIARY_CSV);
 
         // No match for The Matrix.
-        let client = MockClient::new(vec![(200, "[]".to_string())], vec![]);
+        let client = MockClient::new(vec![(200, "[]".to_string()), empty_history()], vec![]);
 
         let summary = run(
             &client,
@@ -729,7 +780,10 @@ mod tests {
         write_csv(&export_dir, "diary.csv", DIARY_CSV);
 
         let client = MockClient::new(
-            vec![(200, match_json("The Matrix", 1999, 481, 603))],
+            vec![
+                (200, match_json("The Matrix", 1999, 481, 603)),
+                empty_history(),
+            ],
             vec![(201, ok_resp(1))],
         );
 
@@ -765,7 +819,10 @@ mod tests {
         write_csv(&export_dir, "watched.csv", watched_csv);
 
         let client = MockClient::new(
-            vec![(200, match_json("Inception", 2010, 123, 27205))],
+            vec![
+                (200, match_json("Inception", 2010, 123, 27205)),
+                empty_history(),
+            ],
             vec![(201, ok_resp(1))],
         );
 
@@ -807,7 +864,13 @@ mod tests {
         ));
         state.save(data_dir.path()).unwrap();
 
-        let client = MockClient::new(vec![(200, match_json("Dune", 2021, 999, 438631))], vec![]);
+        let client = MockClient::new(
+            vec![
+                (200, match_json("Dune", 2021, 999, 438631)),
+                empty_history(),
+            ],
+            vec![],
+        );
 
         let summary = run(
             &client,
@@ -845,7 +908,7 @@ mod tests {
 
         // Trakt returns the accented "Amélie" — does NOT match the unaccented "Amelie".
         let trakt_resp = r#"[{"type":"movie","score":1000.0,"movie":{"title":"Amélie","year":2001,"ids":{"trakt":123,"slug":"amelie","imdb":"tt0211915","tmdb":194}}}]"#;
-        let client = MockClient::new(vec![(200, trakt_resp.to_string())], vec![]);
+        let client = MockClient::new(vec![(200, trakt_resp.to_string()), empty_history()], vec![]);
 
         let summary = run(
             &client,
@@ -911,6 +974,7 @@ mod tests {
                 (200, "[]".to_string()),
                 (200, match_json("Inception", 2010, 123, 27205)),
                 (200, match_json("The Matrix", 1999, 481, 603)),
+                empty_history(),
             ],
             vec![(201, ok_resp(1))], // one write: add_to_history for The Matrix
         );
@@ -948,7 +1012,8 @@ mod tests {
         let export_dir = TempDir::new().unwrap();
         let data_dir = TempDir::new().unwrap();
 
-        let client = MockClient::new(vec![], vec![]);
+        // No films to resolve, but fetch_watched_history still makes one GET.
+        let client = MockClient::new(vec![empty_history()], vec![]);
 
         let summary = run(
             &client,
@@ -993,7 +1058,10 @@ mod tests {
         state.save(data_dir.path()).unwrap();
 
         let client = MockClient::new(
-            vec![(200, match_json("The Matrix", 1999, 481, 603))],
+            vec![
+                (200, match_json("The Matrix", 1999, 481, 603)),
+                empty_history(),
+            ],
             vec![],
         );
 
@@ -1033,7 +1101,10 @@ mod tests {
 
         // First run: real sync — writes The Matrix to history, saves state.
         let client1 = MockClient::new(
-            vec![(200, match_json("The Matrix", 1999, 481, 603))],
+            vec![
+                (200, match_json("The Matrix", 1999, 481, 603)),
+                empty_history(),
+            ],
             vec![(201, ok_resp(1))],
         );
         let summary1 = run(
@@ -1055,7 +1126,10 @@ mod tests {
 
         // Second run: same export, same data dir — state already marks The Matrix synced.
         let client2 = MockClient::new(
-            vec![(200, match_json("The Matrix", 1999, 481, 603))],
+            vec![
+                (200, match_json("The Matrix", 1999, 481, 603)),
+                empty_history(),
+            ],
             vec![], // no POSTs expected
         );
         let summary2 = run(
@@ -1089,7 +1163,10 @@ mod tests {
         write_csv(&export_dir, "reviews.csv", REVIEW_CSV);
 
         let client = MockClient::new(
-            vec![(200, match_json("The Matrix", 1999, 481, 603))],
+            vec![
+                (200, match_json("The Matrix", 1999, 481, 603)),
+                empty_history(),
+            ],
             vec![
                 (201, ok_resp(1)),                // POST /sync/history
                 (201, r#"{"id":1}"#.to_string()), // POST /notes
@@ -1135,7 +1212,10 @@ mod tests {
         write_csv(&export_dir, "reviews.csv", REVIEW_CSV);
 
         let client = MockClient::new(
-            vec![(200, match_json("The Matrix", 1999, 481, 603))],
+            vec![
+                (200, match_json("The Matrix", 1999, 481, 603)),
+                empty_history(),
+            ],
             vec![
                 (201, ok_resp(1)),                                  // POST /sync/history
                 (422, r#"{"error":"limit exceeded"}"#.to_string()), // POST /notes - over limit
@@ -1170,8 +1250,8 @@ mod tests {
             2024-01-15,Unknown Film,2099,https://letterboxd.com/film/unknown-film/,,,,,Great film\n";
         write_csv(&export_dir, "reviews.csv", unmatched_review);
 
-        // No match for Unknown Film
-        let client = MockClient::new(vec![(200, "[]".to_string())], vec![]);
+        // No match for Unknown Film.
+        let client = MockClient::new(vec![(200, "[]".to_string()), empty_history()], vec![]);
 
         let summary = run(
             &client,
@@ -1206,7 +1286,10 @@ mod tests {
         write_csv(&export_dir, "reviews.csv", REVIEW_CSV);
 
         let client = MockClient::new(
-            vec![(200, match_json("The Matrix", 1999, 481, 603))],
+            vec![
+                (200, match_json("The Matrix", 1999, 481, 603)),
+                empty_history(),
+            ],
             vec![], // no POSTs expected in dry run
         );
 
@@ -1248,7 +1331,10 @@ mod tests {
         state.save(data_dir.path()).unwrap();
 
         let client = MockClient::new(
-            vec![(200, match_json("The Matrix", 1999, 481, 603))],
+            vec![
+                (200, match_json("The Matrix", 1999, 481, 603)),
+                empty_history(),
+            ],
             vec![(201, ok_resp(1))], // only history write, no notes write
         );
 
@@ -1295,7 +1381,10 @@ mod tests {
 
         // One film: The Matrix. History POST succeeds; note POST hits limit.
         let client = MockClient::new(
-            vec![(200, match_json("The Matrix", 1999, 481, 603))],
+            vec![
+                (200, match_json("The Matrix", 1999, 481, 603)),
+                empty_history(),
+            ],
             vec![
                 (201, ok_resp(1)),                                  // POST /sync/history
                 (422, r#"{"error":"limit exceeded"}"#.to_string()), // POST /notes — over limit
@@ -1348,6 +1437,7 @@ mod tests {
             vec![
                 (200, match_json("Inception", 2010, 123, 27205)),
                 (200, match_json("The Matrix", 1999, 481, 603)),
+                empty_history(),
             ],
             vec![
                 (422, r#"{"error":"limit"}"#.to_string()), // first note hits limit
@@ -1395,7 +1485,10 @@ mod tests {
         write_csv(&export_dir, "reviews.csv", REVIEW_CSV);
 
         let client = MockClient::new(
-            vec![(200, match_json("The Matrix", 1999, 481, 603))],
+            vec![
+                (200, match_json("The Matrix", 1999, 481, 603)),
+                empty_history(),
+            ],
             vec![
                 (201, ok_resp(1)),                                // POST /sync/history
                 (500, r#"{"error":"server error"}"#.to_string()), // POST /notes — real error
@@ -1446,7 +1539,10 @@ mod tests {
         // The Matrix resolves (GET returns a match), history POST succeeds,
         // but note POST returns 500 — a genuine write error.
         let client = MockClient::new(
-            vec![(200, match_json("The Matrix", 1999, 481, 603))],
+            vec![
+                (200, match_json("The Matrix", 1999, 481, 603)),
+                empty_history(),
+            ],
             vec![
                 (201, ok_resp(1)),                                  // POST /sync/history
                 (500, r#"{"error":"internal error"}"#.to_string()), // POST /notes — write error
@@ -1484,7 +1580,7 @@ mod tests {
 
         write_csv(&export_dir, "diary.csv", DIARY_CSV);
 
-        let client = MockClient::new(vec![(200, "[]".to_string())], vec![]);
+        let client = MockClient::new(vec![(200, "[]".to_string()), empty_history()], vec![]);
 
         let summary = run(
             &client,
@@ -1505,5 +1601,285 @@ mod tests {
             "unmatched must include a reason"
         );
         assert!(summary.errored.is_empty(), "no errors for unmatched film");
+    }
+
+    // ── FG-16: skip films already in Trakt history ────────────────────────────
+
+    #[test]
+    fn diary_film_already_on_trakt_is_skipped_not_duplicated() {
+        // The Matrix is already in the user's Trakt history (tmdb 603).
+        // It must NOT get a second play entry; watched_on_trakt must be 1.
+        let export_dir = TempDir::new().unwrap();
+        let data_dir = TempDir::new().unwrap();
+
+        write_csv(&export_dir, "diary.csv", DIARY_CSV);
+
+        let client = MockClient::new(
+            vec![
+                (200, match_json("The Matrix", 1999, 481, 603)),
+                trakt_history_json(&[603]),
+            ],
+            vec![], // no POSTs — already on Trakt
+        );
+
+        let summary = run(
+            &client,
+            data_dir.path(),
+            "https://api.trakt.tv",
+            "token",
+            export_dir.path(),
+            false,
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(
+            client.post_count(),
+            0,
+            "film already on Trakt must not trigger a write"
+        );
+        assert_eq!(
+            summary.watched_on_trakt, 1,
+            "already-on-Trakt film must be counted in watched_on_trakt"
+        );
+        assert_eq!(summary.watched_added, 0);
+        assert_eq!(
+            summary.watched_skipped, 0,
+            "already-on-Trakt is a distinct bucket from already-synced"
+        );
+    }
+
+    #[test]
+    fn new_film_not_on_trakt_is_added_normally() {
+        // Inception is NOT in Trakt history; The Matrix IS.
+        // Only Inception should be added.
+        let export_dir = TempDir::new().unwrap();
+        let data_dir = TempDir::new().unwrap();
+
+        write_csv(
+            &export_dir,
+            "diary.csv",
+            "Date,Name,Year,Letterboxd URI,Rating,Rewatch,Tags,Watched Date\n\
+            2024-01-11,Inception,2010,https://letterboxd.com/film/inception/,,,,2010-07-16\n\
+            2024-01-12,The Matrix,1999,https://letterboxd.com/film/the-matrix/,,,,1999-03-31\n",
+        );
+
+        // Films sorted: Inception < The Matrix.
+        let client = MockClient::new(
+            vec![
+                (200, match_json("Inception", 2010, 123, 27205)),
+                (200, match_json("The Matrix", 1999, 481, 603)),
+                trakt_history_json(&[603]), // The Matrix already on Trakt
+            ],
+            vec![(201, ok_resp(1))], // one write: Inception
+        );
+
+        let summary = run(
+            &client,
+            data_dir.path(),
+            "https://api.trakt.tv",
+            "token",
+            export_dir.path(),
+            false,
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(summary.watched_added, 1, "Inception must be added");
+        assert_eq!(
+            summary.watched_on_trakt, 1,
+            "The Matrix must be counted as already-on-Trakt"
+        );
+        assert_eq!(summary.watched_skipped, 0);
+        assert_eq!(client.post_count(), 1);
+
+        // The POST body must contain Inception's watched date, not The Matrix's.
+        let bodies = client.post_bodies();
+        assert!(
+            bodies
+                .iter()
+                .any(|b| b.contains("2010-07-16T00:00:00.000Z")),
+            "watched_at must use Inception's watched date"
+        );
+        assert!(
+            !bodies
+                .iter()
+                .any(|b| b.contains("1999-03-31T00:00:00.000Z")),
+            "The Matrix must not appear in any POST body"
+        );
+    }
+
+    #[test]
+    fn dateless_watched_csv_film_already_on_trakt_is_skipped() {
+        // watched.csv entries have only a logged Date (no real watch date).
+        // If the film is already in Trakt history it must still be skipped —
+        // this is the primary duplication scenario described in FG-16.
+        let export_dir = TempDir::new().unwrap();
+        let data_dir = TempDir::new().unwrap();
+
+        let watched_csv = "Date,Name,Year,Letterboxd URI\n\
+            2024-01-15,Inception,2010,https://letterboxd.com/film/inception/\n";
+        write_csv(&export_dir, "watched.csv", watched_csv);
+
+        let client = MockClient::new(
+            vec![
+                (200, match_json("Inception", 2010, 123, 27205)),
+                trakt_history_json(&[27205]), // already on Trakt
+            ],
+            vec![], // no POSTs
+        );
+
+        let summary = run(
+            &client,
+            data_dir.path(),
+            "https://api.trakt.tv",
+            "token",
+            export_dir.path(),
+            false,
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(
+            client.post_count(),
+            0,
+            "dateless watched.csv film already on Trakt must not be re-added"
+        );
+        assert_eq!(summary.watched_on_trakt, 1);
+        assert_eq!(summary.watched_added, 0);
+        assert_eq!(summary.watched_skipped, 0);
+    }
+
+    #[test]
+    fn dry_run_already_on_trakt_is_counted_not_posted() {
+        // In dry-run mode, a film already in Trakt history must still be
+        // counted in watched_on_trakt — the skip decision happens before the
+        // dry-run write gate, so dry-run must reflect it accurately.
+        let export_dir = TempDir::new().unwrap();
+        let data_dir = TempDir::new().unwrap();
+
+        write_csv(&export_dir, "diary.csv", DIARY_CSV);
+
+        let client = MockClient::new(
+            vec![
+                (200, match_json("The Matrix", 1999, 481, 603)),
+                trakt_history_json(&[603]), // already on Trakt
+            ],
+            vec![], // no POSTs — dry run AND already on Trakt
+        );
+
+        let summary = run(
+            &client,
+            data_dir.path(),
+            "https://api.trakt.tv",
+            "token",
+            export_dir.path(),
+            true, // dry_run
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(client.post_count(), 0, "dry run must not POST anything");
+        assert!(summary.dry_run);
+        assert_eq!(
+            summary.watched_on_trakt, 1,
+            "dry-run must still count the already-on-Trakt film"
+        );
+        assert_eq!(
+            summary.watched_added, 0,
+            "already-on-Trakt film must not appear in would-add count"
+        );
+        assert_eq!(
+            summary.watched_skipped, 0,
+            "distinct from already-synced bucket"
+        );
+    }
+
+    #[test]
+    fn three_bucket_counts_are_distinct_and_correct_in_single_run() {
+        // Three films hit each bucket simultaneously:
+        //   Inception (tmdb 27205) → already on Trakt       → watched_on_trakt += 1
+        //   Parasite  (tmdb 496243)→ already synced in state → watched_skipped  += 1
+        //   The Matrix(tmdb 603)   → genuinely new           → watched_added     += 1
+        //
+        // Asserts the counts are all distinct and only The Matrix triggers a POST.
+        let export_dir = TempDir::new().unwrap();
+        let data_dir = TempDir::new().unwrap();
+
+        write_csv(
+            &export_dir,
+            "diary.csv",
+            "Date,Name,Year,Letterboxd URI,Rating,Rewatch,Tags,Watched Date\n\
+            2024-01-11,Inception,2010,https://letterboxd.com/film/inception/,,,,2010-07-16\n\
+            2024-01-12,Parasite,2019,https://letterboxd.com/film/parasite/,,,,2019-05-30\n\
+            2024-01-13,The Matrix,1999,https://letterboxd.com/film/the-matrix/,,,,1999-03-31\n",
+        );
+
+        // Pre-mark Parasite as already synced.
+        let mut state = SyncState::load(data_dir.path());
+        state.mark(SyncKey::new(
+            Direction::LetterboxdToTrakt,
+            ItemType::Watched,
+            ItemRef::Tmdb(496243),
+            "2019-05-30",
+        ));
+        state.save(data_dir.path()).unwrap();
+
+        // Films sorted: Inception < Parasite < The Matrix.
+        let client = MockClient::new(
+            vec![
+                (200, match_json("Inception", 2010, 123, 27205)),
+                (200, match_json("Parasite", 2019, 456, 496243)),
+                (200, match_json("The Matrix", 1999, 481, 603)),
+                trakt_history_json(&[27205]), // Inception already on Trakt
+            ],
+            vec![(201, ok_resp(1))], // only The Matrix gets added
+        );
+
+        let summary = run(
+            &client,
+            data_dir.path(),
+            "https://api.trakt.tv",
+            "token",
+            export_dir.path(),
+            false,
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(summary.watched_added, 1, "The Matrix must be added");
+        assert_eq!(
+            summary.watched_on_trakt, 1,
+            "Inception must be counted as already-on-Trakt"
+        );
+        assert_eq!(
+            summary.watched_skipped, 1,
+            "Parasite must be counted as already-synced"
+        );
+        assert_eq!(
+            client.post_count(),
+            1,
+            "only one POST — The Matrix to /sync/history"
+        );
+        // The POST body must contain The Matrix's watch date, not Inception's or Parasite's.
+        let bodies = client.post_bodies();
+        assert!(
+            bodies
+                .iter()
+                .any(|b| b.contains("1999-03-31T00:00:00.000Z")),
+            "POST body must contain The Matrix watch date"
+        );
+        assert!(
+            !bodies
+                .iter()
+                .any(|b| b.contains("2010-07-16T00:00:00.000Z")),
+            "Inception (already on Trakt) must not appear in any POST body"
+        );
+        assert!(
+            !bodies
+                .iter()
+                .any(|b| b.contains("2019-05-30T00:00:00.000Z")),
+            "Parasite (already synced) must not appear in any POST body"
+        );
     }
 }
