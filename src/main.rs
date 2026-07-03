@@ -64,6 +64,12 @@ enum SyncDirection {
         /// Re-export everything, ignoring previously exported items
         #[arg(long)]
         force: bool,
+        /// Path to the user's Letterboxd export (dir or CSV files) for smart deduplication
+        #[arg(long)]
+        letterboxd_export: Option<PathBuf>,
+        /// Include Trakt ratings in the diary CSV (overwrites existing Letterboxd ratings on import)
+        #[arg(long)]
+        include_ratings: bool,
     },
 }
 
@@ -162,6 +168,7 @@ fn to_letterboxd_has_errors(s: &sync_to_letterboxd::SyncSummary) -> bool {
 fn format_to_letterboxd_summary(
     s: &sync_to_letterboxd::SyncSummary,
     data_dir: &std::path::Path,
+    include_ratings: bool,
 ) -> String {
     use std::fmt::Write;
     let mut out = String::new();
@@ -186,6 +193,28 @@ fn format_to_letterboxd_summary(
     writeln!(out, "  Reviews in diary:         {}", s.reviews_in_diary).unwrap();
     writeln!(out, "  Watchlist rows:           {}", s.watchlist_rows).unwrap();
     writeln!(out, "  Already exported:         {} skipped", s.skipped).unwrap();
+
+    if s.enriched + s.skipped_bulk + s.skipped_existing + s.net_new_bulk > 0 {
+        let net_new_clean = s
+            .diary_rows
+            .saturating_sub(s.net_new_bulk)
+            .saturating_sub(s.enriched);
+        writeln!(out).unwrap();
+        writeln!(out, "  Net-new (clean date):       {}", net_new_clean).unwrap();
+        writeln!(out, "  Net-new (bulk date, blank): {}", s.net_new_bulk).unwrap();
+        writeln!(out, "  Enriched (date added):      {}", s.enriched).unwrap();
+        writeln!(out, "  Skipped (bulk+dateless):    {}", s.skipped_bulk).unwrap();
+        writeln!(out, "  Skipped (already dated):    {}", s.skipped_existing).unwrap();
+    }
+
+    if !include_ratings && s.ratings_in_diary > 0 {
+        writeln!(out).unwrap();
+        writeln!(
+            out,
+            "  Ratings omitted from CSV (pass --include-ratings to include; Letterboxd import overwrites existing ratings)"
+        )
+        .unwrap();
+    }
 
     if !s.errored.is_empty() {
         writeln!(out).unwrap();
@@ -234,8 +263,15 @@ fn format_to_letterboxd_summary(
     out
 }
 
-fn print_to_letterboxd_summary(s: &sync_to_letterboxd::SyncSummary, data_dir: &std::path::Path) {
-    print!("{}", format_to_letterboxd_summary(s, data_dir));
+fn print_to_letterboxd_summary(
+    s: &sync_to_letterboxd::SyncSummary,
+    data_dir: &std::path::Path,
+    include_ratings: bool,
+) {
+    print!(
+        "{}",
+        format_to_letterboxd_summary(s, data_dir, include_ratings)
+    );
 }
 
 fn run_trakt_status(cfg: &config::Config) -> Result<(), String> {
@@ -333,7 +369,12 @@ fn main() {
                     }
                 }
             }
-            SyncDirection::ToLetterboxd { dry_run, force } => {
+            SyncDirection::ToLetterboxd {
+                dry_run,
+                force,
+                letterboxd_export,
+                include_ratings,
+            } => {
                 let client = trakt_client::ReqwestClient::new(&cfg.trakt_client_id);
                 let token = match auth::get_valid_token(
                     &client,
@@ -354,9 +395,11 @@ fn main() {
                     &token,
                     *dry_run,
                     *force,
+                    letterboxd_export.as_deref(),
+                    *include_ratings,
                 ) {
                     Ok(s) => {
-                        print_to_letterboxd_summary(&s, &cfg.data_dir);
+                        print_to_letterboxd_summary(&s, &cfg.data_dir, *include_ratings);
                         if to_letterboxd_has_errors(&s) {
                             process::exit(1);
                         }
@@ -423,6 +466,10 @@ mod tests {
             dry_run,
             reviews_in_diary: 0,
             errored,
+            enriched: 0,
+            skipped_existing: 0,
+            skipped_bulk: 0,
+            net_new_bulk: 0,
         }
     }
 
@@ -654,7 +701,7 @@ mod tests {
     fn to_letterboxd_dry_run_label_appears_in_output() {
         let s = make_to_summary(1, 1, 1, 0, 0, true, vec![]);
         let data_dir = std::path::Path::new("/tmp/dummy");
-        let output = format_to_letterboxd_summary(&s, data_dir);
+        let output = format_to_letterboxd_summary(&s, data_dir, true);
         assert!(
             output.contains("[DRY RUN]"),
             "dry-run output must contain '[DRY RUN]'; got:\n{output}"
@@ -665,7 +712,7 @@ mod tests {
     fn to_letterboxd_real_run_has_no_dry_run_label() {
         let s = make_to_summary(1, 1, 1, 0, 0, false, vec![]);
         let data_dir = std::path::Path::new("/tmp/dummy");
-        let output = format_to_letterboxd_summary(&s, data_dir);
+        let output = format_to_letterboxd_summary(&s, data_dir, true);
         assert!(
             !output.contains("[DRY RUN]"),
             "real-run output must not contain '[DRY RUN]'; got:\n{output}"
@@ -676,7 +723,7 @@ mod tests {
     fn to_letterboxd_summary_routes_diary_to_import_and_watchlist_to_watchlist_importer() {
         let s = make_to_summary(1, 0, 1, 0, 0, false, vec![]);
         let data_dir = std::path::Path::new("/tmp/dummy");
-        let output = format_to_letterboxd_summary(&s, data_dir);
+        let output = format_to_letterboxd_summary(&s, data_dir, true);
         assert!(
             output.contains("letterboxd.com/import"),
             "diary next-step must reference letterboxd.com/import; got:\n{output}"
@@ -711,7 +758,7 @@ mod tests {
     fn fg18_watchlist_next_step_does_not_reference_letterboxd_com_import() {
         let s = make_to_summary(1, 1, 1, 2, 0, false, vec![]);
         let data_dir = std::path::Path::new("/tmp/dummy");
-        let output = format_to_letterboxd_summary(&s, data_dir);
+        let output = format_to_letterboxd_summary(&s, data_dir, true);
 
         let watchlist_line = output
             .lines()
@@ -730,7 +777,7 @@ mod tests {
     fn fg18_watchlist_next_step_names_import_films_to_watchlist_ui() {
         let s = make_to_summary(1, 1, 1, 2, 0, false, vec![]);
         let data_dir = std::path::Path::new("/tmp/dummy");
-        let output = format_to_letterboxd_summary(&s, data_dir);
+        let output = format_to_letterboxd_summary(&s, data_dir, true);
 
         assert!(
             output.contains("Import films to watchlist"),
@@ -744,7 +791,7 @@ mod tests {
     fn fg18_watchlist_next_step_names_add_films_to_watchlist_button() {
         let s = make_to_summary(1, 1, 1, 2, 0, false, vec![]);
         let data_dir = std::path::Path::new("/tmp/dummy");
-        let output = format_to_letterboxd_summary(&s, data_dir);
+        let output = format_to_letterboxd_summary(&s, data_dir, true);
 
         assert!(
             output.contains("Add films to watchlist"),
@@ -758,7 +805,7 @@ mod tests {
     fn fg18_diary_next_step_routes_to_letterboxd_com_import() {
         let s = make_to_summary(3, 2, 3, 0, 0, false, vec![]);
         let data_dir = std::path::Path::new("/tmp/dummy");
-        let output = format_to_letterboxd_summary(&s, data_dir);
+        let output = format_to_letterboxd_summary(&s, data_dir, true);
 
         // The next-step line for the diary CSV contains both "Diary CSV" and
         // the arrow character "→". The file-path line does not contain "→".
@@ -779,7 +826,7 @@ mod tests {
     fn fg18_diary_and_watchlist_presented_as_two_distinct_next_step_destinations() {
         let s = make_to_summary(5, 3, 5, 4, 0, false, vec![]);
         let data_dir = std::path::Path::new("/tmp/dummy");
-        let output = format_to_letterboxd_summary(&s, data_dir);
+        let output = format_to_letterboxd_summary(&s, data_dir, true);
 
         // Both numbered steps must appear.
         assert!(
@@ -872,7 +919,7 @@ mod tests {
             .collect();
         let s = make_to_summary(0, 0, 0, 0, 0, false, errored);
         let data_dir = std::path::Path::new("/tmp/dummy");
-        let output = format_to_letterboxd_summary(&s, data_dir);
+        let output = format_to_letterboxd_summary(&s, data_dir, true);
 
         let overflow_line = format!("    ... and {} more", 21 - DETAIL_LIST_CAP);
         assert!(
@@ -882,6 +929,132 @@ mod tests {
         assert!(
             !output.contains("T2L Error 20"),
             "T2L Error 20 must be truncated"
+        );
+    }
+
+    // ── FG-17: bucket lines in to-letterboxd summary ─────────────────────────
+
+    #[test]
+    fn to_letterboxd_bucket_lines_shown_when_lb_export_fields_nonzero() {
+        let mut s = make_to_summary(289, 0, 0, 0, 0, false, vec![]);
+        s.enriched = 21;
+        s.skipped_bulk = 58;
+        s.skipped_existing = 2;
+        s.net_new_bulk = 28;
+        let data_dir = std::path::Path::new("/tmp/dummy");
+        let output = format_to_letterboxd_summary(&s, data_dir, true);
+
+        assert!(
+            output.contains("Net-new (clean date):"),
+            "output must contain 'Net-new (clean date):'; got:\n{output}"
+        );
+        assert!(
+            output.contains("Net-new (bulk date, blank):"),
+            "output must contain 'Net-new (bulk date, blank):'; got:\n{output}"
+        );
+        assert!(
+            output.contains("Enriched (date added):"),
+            "output must contain 'Enriched (date added):'; got:\n{output}"
+        );
+        assert!(
+            output.contains("Skipped (bulk+dateless):"),
+            "output must contain 'Skipped (bulk+dateless):'; got:\n{output}"
+        );
+        assert!(
+            output.contains("Skipped (already dated):"),
+            "output must contain 'Skipped (already dated):'; got:\n{output}"
+        );
+
+        // net_new_clean = diary_rows - net_new_bulk - enriched = 289 - 28 - 21 = 240
+        assert!(
+            output.contains("Net-new (clean date):       240"),
+            "net-new clean count must be 240; got:\n{output}"
+        );
+        assert!(
+            output.contains("Net-new (bulk date, blank): 28"),
+            "net-new bulk count must be 28; got:\n{output}"
+        );
+        assert!(
+            output.contains("Enriched (date added):      21"),
+            "enriched count must be 21; got:\n{output}"
+        );
+        assert!(
+            output.contains("Skipped (bulk+dateless):    58"),
+            "skipped bulk count must be 58; got:\n{output}"
+        );
+        assert!(
+            output.contains("Skipped (already dated):    2"),
+            "skipped existing count must be 2; got:\n{output}"
+        );
+    }
+
+    #[test]
+    fn to_letterboxd_bucket_lines_hidden_when_all_four_are_zero() {
+        // With no lb_export (all four new fields = 0), output must be identical to the
+        // pre-FG-17 baseline (no bucket section).
+        let s = make_to_summary(5, 3, 5, 2, 0, false, vec![]);
+        let data_dir = std::path::Path::new("/tmp/dummy");
+        let output = format_to_letterboxd_summary(&s, data_dir, true);
+
+        assert!(
+            !output.contains("Net-new (clean date):"),
+            "bucket lines must be absent when no lb_export provided; got:\n{output}"
+        );
+        assert!(
+            !output.contains("Enriched (date added):"),
+            "bucket lines must be absent when no lb_export provided; got:\n{output}"
+        );
+        assert!(
+            !output.contains("Skipped (bulk+dateless):"),
+            "bucket lines must be absent when no lb_export provided; got:\n{output}"
+        );
+        assert!(
+            !output.contains("Skipped (already dated):"),
+            "bucket lines must be absent when no lb_export provided; got:\n{output}"
+        );
+    }
+
+    #[test]
+    fn ratings_omitted_note_appears_when_include_ratings_false_and_ratings_in_diary_positive() {
+        let s = make_to_summary(3, 3, 3, 0, 0, false, vec![]);
+        let data_dir = std::path::Path::new("/tmp/dummy");
+        let output = format_to_letterboxd_summary(&s, data_dir, false);
+
+        assert!(
+            output.contains("Ratings omitted from CSV"),
+            "ratings-omitted note must appear when include_ratings=false and ratings_in_diary>0; got:\n{output}"
+        );
+        assert!(
+            output.contains("--include-ratings"),
+            "ratings-omitted note must mention --include-ratings flag; got:\n{output}"
+        );
+        assert!(
+            output.contains("Letterboxd import overwrites existing ratings"),
+            "ratings-omitted note must warn about overwrite; got:\n{output}"
+        );
+    }
+
+    #[test]
+    fn ratings_omitted_note_absent_when_include_ratings_true() {
+        let s = make_to_summary(3, 3, 3, 0, 0, false, vec![]);
+        let data_dir = std::path::Path::new("/tmp/dummy");
+        let output = format_to_letterboxd_summary(&s, data_dir, true);
+
+        assert!(
+            !output.contains("Ratings omitted from CSV"),
+            "ratings-omitted note must be absent when include_ratings=true; got:\n{output}"
+        );
+    }
+
+    #[test]
+    fn ratings_omitted_note_absent_when_ratings_in_diary_zero() {
+        let s = make_to_summary(3, 0, 0, 0, 0, false, vec![]);
+        let data_dir = std::path::Path::new("/tmp/dummy");
+        let output = format_to_letterboxd_summary(&s, data_dir, false);
+
+        assert!(
+            !output.contains("Ratings omitted from CSV"),
+            "ratings-omitted note must be absent when ratings_in_diary=0; got:\n{output}"
         );
     }
 }

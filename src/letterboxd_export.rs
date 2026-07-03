@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use csv::ReaderBuilder;
 use std::fs;
 use std::io::{Cursor, Read};
@@ -11,10 +9,14 @@ pub struct DiaryEntry {
     pub logged_date: String,
     pub name: String,
     pub year: u32,
+    #[allow(dead_code)] // parsed from CSV; not consumed by sync logic
     pub letterboxd_uri: String,
     pub slug: String,
+    #[allow(dead_code)] // parsed from CSV; not consumed by sync logic
     pub rating: Option<f32>,
+    #[allow(dead_code)] // parsed from CSV; not consumed by sync logic
     pub rewatch: bool,
+    #[allow(dead_code)] // parsed from CSV; not consumed by sync logic
     pub tags: Vec<String>,
     pub watched_date: String,
 }
@@ -24,6 +26,7 @@ pub struct WatchedEntry {
     pub logged_date: String,
     pub name: String,
     pub year: u32,
+    #[allow(dead_code)] // parsed from CSV; not consumed by sync logic
     pub letterboxd_uri: String,
     pub slug: String,
 }
@@ -33,17 +36,22 @@ pub struct RatingEntry {
     pub logged_date: String,
     pub name: String,
     pub year: u32,
+    #[allow(dead_code)] // parsed from CSV; not consumed by sync logic
     pub letterboxd_uri: String,
+    #[allow(dead_code)] // parsed from CSV; not consumed by sync logic
     pub slug: String,
     pub rating: f32,
 }
 
 #[derive(Debug, Clone)]
 pub struct WatchlistEntry {
+    #[allow(dead_code)] // parsed from CSV; not consumed by sync logic
     pub logged_date: String,
     pub name: String,
     pub year: u32,
+    #[allow(dead_code)] // parsed from CSV; not consumed by sync logic
     pub letterboxd_uri: String,
+    #[allow(dead_code)] // parsed from CSV; not consumed by sync logic
     pub slug: String,
 }
 
@@ -52,10 +60,15 @@ pub struct ReviewEntry {
     pub logged_date: String,
     pub name: String,
     pub year: u32,
+    #[allow(dead_code)] // parsed from CSV; not consumed by sync logic
     pub letterboxd_uri: String,
+    #[allow(dead_code)] // parsed from CSV; not consumed by sync logic
     pub slug: String,
+    #[allow(dead_code)] // parsed from CSV; not consumed by sync logic
     pub rating: Option<f32>,
+    #[allow(dead_code)] // parsed from CSV; not consumed by sync logic
     pub rewatch: bool,
+    #[allow(dead_code)] // parsed from CSV; not consumed by sync logic
     pub tags: Vec<String>,
     pub watched_date: String,
     pub review: String,
