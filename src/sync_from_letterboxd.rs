@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
+use crate::constants::BULK_DATE_THRESHOLD;
 use crate::{
     letterboxd_export::LetterboxdExport,
     matching::{resolve_films, UnmatchedFilm},
@@ -22,6 +23,8 @@ pub struct SyncSummary {
     pub watched_added: u32,
     pub watched_on_trakt: u32,
     pub watched_skipped: u32,
+    /// watched.csv films whose logged Date fell on a bulk-import day (skipped, not written to Trakt).
+    pub watched_bulk_date_skipped: u32,
     pub ratings_added: u32,
     pub ratings_skipped: u32,
     pub watchlist_added: u32,
@@ -149,6 +152,7 @@ pub fn run(
 
     let mut watched_on_trakt = 0u32;
     let mut watched_skipped = 0u32;
+    let mut watched_bulk_date_skipped = 0u32;
     let mut ratings_skipped = 0u32;
     let mut watchlist_skipped = 0u32;
     let mut errored: Vec<ErroredItem> = Vec::new();
@@ -160,6 +164,20 @@ pub fn run(
 
     // Diary slugs guard against re-adding watched.csv entries already in diary.
     let diary_slugs: HashSet<&str> = export.diary.iter().map(|e| e.slug.as_str()).collect();
+
+    // Precompute bulk days: full pass over watched.csv before the per-film loop.
+    // Any calendar day with >= BULK_DATE_THRESHOLD films is a bulk-import day.
+    let bulk_days: HashSet<String> = {
+        let mut day_counts: HashMap<String, usize> = HashMap::new();
+        for entry in &export.watched {
+            *day_counts.entry(entry.logged_date.clone()).or_insert(0) += 1;
+        }
+        day_counts
+            .into_iter()
+            .filter(|(_, count)| *count >= BULK_DATE_THRESHOLD)
+            .map(|(day, _)| day)
+            .collect()
+    };
 
     for entry in &export.diary {
         let (tmdb_id, imdb_id) = match lookup(&entry.name, entry.year) {
@@ -201,6 +219,10 @@ pub fn run(
                 watched_on_trakt += 1;
                 continue;
             }
+        }
+        if bulk_days.contains(&entry.logged_date) {
+            watched_bulk_date_skipped += 1;
+            continue;
         }
         let date = entry.logged_date.clone();
         if !force && state.contains(&watched_key(tmdb_id, &entry.name, entry.year, &date)) {
@@ -373,6 +395,7 @@ pub fn run(
         watched_added,
         watched_on_trakt,
         watched_skipped,
+        watched_bulk_date_skipped,
         ratings_added,
         ratings_skipped,
         watchlist_added,
@@ -2076,6 +2099,463 @@ mod tests {
         );
         assert_eq!(summary.watched_added, 1);
         assert!(summary.unmatched.is_empty());
+    }
+
+    // ── FG-19: bulk-date detection in watched.csv ─────────────────────────────
+
+    fn make_watched_csv(entries: &[(&str, u32, &str, &str)]) -> String {
+        // entries: (title, year, slug_suffix, date)
+        let mut s = "Date,Name,Year,Letterboxd URI\n".to_string();
+        for (title, year, slug, date) in entries {
+            s.push_str(&format!(
+                "{date},{title},{year},https://letterboxd.com/film/{slug}/\n"
+            ));
+        }
+        s
+    }
+
+    #[test]
+    fn watched_csv_bulk_date_cluster_detected_and_skipped() {
+        // 10 watched.csv films on the same date → bulk day → all skipped, nothing written.
+        let export_dir = TempDir::new().unwrap();
+        let data_dir = TempDir::new().unwrap();
+
+        let bulk_date = "2023-06-16";
+        let watched = make_watched_csv(&[
+            ("Film A", 2001, "film-a", bulk_date),
+            ("Film B", 2002, "film-b", bulk_date),
+            ("Film C", 2003, "film-c", bulk_date),
+            ("Film D", 2004, "film-d", bulk_date),
+            ("Film E", 2005, "film-e", bulk_date),
+            ("Film F", 2006, "film-f", bulk_date),
+            ("Film G", 2007, "film-g", bulk_date),
+            ("Film H", 2008, "film-h", bulk_date),
+            ("Film I", 2009, "film-i", bulk_date),
+            ("Film J", 2010, "film-j", bulk_date),
+        ]);
+        write_csv(&export_dir, "watched.csv", &watched);
+
+        // Films sorted alphabetically: Film A < Film B < ... < Film J
+        let mut gets: Vec<(u16, String)> = (0..10)
+            .map(|i| {
+                let title = format!("Film {}", (b'A' + i) as char);
+                let year = 2001 + i as u32;
+                let tmdb = 100 + i as u64;
+                (200, match_json(&title, year, tmdb, tmdb))
+            })
+            .collect();
+        gets.push(empty_history());
+
+        let client = MockClient::new(gets, vec![]);
+
+        let summary = run(
+            &client,
+            data_dir.path(),
+            "https://api.trakt.tv",
+            "token",
+            export_dir.path(),
+            false,
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(
+            client.post_count(),
+            0,
+            "bulk-date cluster must not trigger any write"
+        );
+        assert_eq!(
+            summary.watched_bulk_date_skipped, 10,
+            "all 10 bulk-date films must be counted in watched_bulk_date_skipped"
+        );
+        assert_eq!(summary.watched_added, 0);
+        assert_eq!(summary.watched_on_trakt, 0);
+        assert_eq!(summary.watched_skipped, 0);
+    }
+
+    #[test]
+    fn diary_entry_syncs_unaffected_by_bulk_watched_csv_cluster() {
+        // Diary entry (real watch date) must sync even when watched.csv has a bulk cluster
+        // on the same logged date.
+        let export_dir = TempDir::new().unwrap();
+        let data_dir = TempDir::new().unwrap();
+
+        // Inception in diary with a real watched_date — must sync.
+        write_csv(
+            &export_dir,
+            "diary.csv",
+            "Date,Name,Year,Letterboxd URI,Rating,Rewatch,Tags,Watched Date\n\
+            2023-06-16,Inception,2010,https://letterboxd.com/film/inception/,,,,2010-07-16\n",
+        );
+
+        // 10 OTHER films in watched.csv on the same logged date — bulk, all skipped.
+        let bulk_date = "2023-06-16";
+        let watched = make_watched_csv(&[
+            ("Film A", 2001, "film-a", bulk_date),
+            ("Film B", 2002, "film-b", bulk_date),
+            ("Film C", 2003, "film-c", bulk_date),
+            ("Film D", 2004, "film-d", bulk_date),
+            ("Film E", 2005, "film-e", bulk_date),
+            ("Film F", 2006, "film-f", bulk_date),
+            ("Film G", 2007, "film-g", bulk_date),
+            ("Film H", 2008, "film-h", bulk_date),
+            ("Film I", 2009, "film-i", bulk_date),
+            ("Film J", 2010, "film-j", bulk_date),
+        ]);
+        write_csv(&export_dir, "watched.csv", &watched);
+
+        // Films sorted: Film A-J then Inception.
+        let mut gets: Vec<(u16, String)> = (0..10)
+            .map(|i| {
+                let title = format!("Film {}", (b'A' + i) as char);
+                let year = 2001 + i as u32;
+                let tmdb = 100 + i as u64;
+                (200, match_json(&title, year, tmdb, tmdb))
+            })
+            .collect();
+        gets.push((200, match_json("Inception", 2010, 123, 27205)));
+        gets.push(empty_history());
+
+        let client = MockClient::new(gets, vec![(201, ok_resp(1))]);
+
+        let summary = run(
+            &client,
+            data_dir.path(),
+            "https://api.trakt.tv",
+            "token",
+            export_dir.path(),
+            false,
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(
+            summary.watched_added, 1,
+            "diary entry must sync despite bulk watched.csv cluster"
+        );
+        assert_eq!(
+            summary.watched_bulk_date_skipped, 10,
+            "10 watched.csv bulk-date films must be skipped"
+        );
+
+        let bodies = client.post_bodies();
+        assert!(
+            bodies
+                .iter()
+                .any(|b| b.contains("2010-07-16T00:00:00.000Z")),
+            "diary entry must sync with its real watched date"
+        );
+    }
+
+    #[test]
+    fn watched_csv_nine_films_same_date_not_bulk() {
+        // 9 films on one day is exactly one below BULK_DATE_THRESHOLD — must NOT be bulk.
+        let export_dir = TempDir::new().unwrap();
+        let data_dir = TempDir::new().unwrap();
+
+        let date = "2023-06-16";
+        let watched = make_watched_csv(&[
+            ("Film A", 2001, "film-a", date),
+            ("Film B", 2002, "film-b", date),
+            ("Film C", 2003, "film-c", date),
+            ("Film D", 2004, "film-d", date),
+            ("Film E", 2005, "film-e", date),
+            ("Film F", 2006, "film-f", date),
+            ("Film G", 2007, "film-g", date),
+            ("Film H", 2008, "film-h", date),
+            ("Film I", 2009, "film-i", date),
+        ]);
+        write_csv(&export_dir, "watched.csv", &watched);
+
+        let mut gets: Vec<(u16, String)> = (0..9)
+            .map(|i| {
+                let title = format!("Film {}", (b'A' + i) as char);
+                let year = 2001 + i as u32;
+                let tmdb = 100 + i as u64;
+                (200, match_json(&title, year, tmdb, tmdb))
+            })
+            .collect();
+        gets.push(empty_history());
+
+        let client = MockClient::new(gets, vec![(201, ok_resp(9))]);
+
+        let summary = run(
+            &client,
+            data_dir.path(),
+            "https://api.trakt.tv",
+            "token",
+            export_dir.path(),
+            false,
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(
+            summary.watched_bulk_date_skipped, 0,
+            "9 films must NOT trigger bulk-date detection"
+        );
+        assert_eq!(summary.watched_added, 9, "all 9 films must be added");
+
+        // POST body must contain the shared logged date so the films appear in Trakt with that date.
+        let bodies = client.post_bodies();
+        assert_eq!(bodies.len(), 1, "exactly one batch POST to sync/history");
+        assert!(
+            bodies[0].contains("2023-06-16T00:00:00.000Z"),
+            "POST body must include the logged date for all 9 non-bulk films; got:\n{}",
+            bodies[0]
+        );
+    }
+
+    #[test]
+    fn watched_csv_exactly_ten_films_triggers_bulk() {
+        // 10 films on one day hits BULK_DATE_THRESHOLD — all must be skipped.
+        let export_dir = TempDir::new().unwrap();
+        let data_dir = TempDir::new().unwrap();
+
+        let date = "2023-06-16";
+        let watched = make_watched_csv(&[
+            ("Film A", 2001, "film-a", date),
+            ("Film B", 2002, "film-b", date),
+            ("Film C", 2003, "film-c", date),
+            ("Film D", 2004, "film-d", date),
+            ("Film E", 2005, "film-e", date),
+            ("Film F", 2006, "film-f", date),
+            ("Film G", 2007, "film-g", date),
+            ("Film H", 2008, "film-h", date),
+            ("Film I", 2009, "film-i", date),
+            ("Film J", 2010, "film-j", date),
+        ]);
+        write_csv(&export_dir, "watched.csv", &watched);
+
+        let mut gets: Vec<(u16, String)> = (0..10)
+            .map(|i| {
+                let title = format!("Film {}", (b'A' + i) as char);
+                let year = 2001 + i as u32;
+                let tmdb = 100 + i as u64;
+                (200, match_json(&title, year, tmdb, tmdb))
+            })
+            .collect();
+        gets.push(empty_history());
+
+        let client = MockClient::new(gets, vec![]);
+
+        let summary = run(
+            &client,
+            data_dir.path(),
+            "https://api.trakt.tv",
+            "token",
+            export_dir.path(),
+            false,
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(
+            summary.watched_bulk_date_skipped, 10,
+            "10 films must hit BULK_DATE_THRESHOLD and all be skipped"
+        );
+        assert_eq!(summary.watched_added, 0);
+        assert_eq!(client.post_count(), 0, "no writes for bulk-date films");
+    }
+
+    #[test]
+    fn watched_csv_non_bulk_day_film_still_syncs() {
+        // A single watched.csv film on its own date is not a bulk day — must sync.
+        let export_dir = TempDir::new().unwrap();
+        let data_dir = TempDir::new().unwrap();
+
+        write_csv(
+            &export_dir,
+            "watched.csv",
+            "Date,Name,Year,Letterboxd URI\n\
+            2023-05-15,Inception,2010,https://letterboxd.com/film/inception/\n",
+        );
+
+        let client = MockClient::new(
+            vec![
+                (200, match_json("Inception", 2010, 123, 27205)),
+                empty_history(),
+            ],
+            vec![(201, ok_resp(1))],
+        );
+
+        let summary = run(
+            &client,
+            data_dir.path(),
+            "https://api.trakt.tv",
+            "token",
+            export_dir.path(),
+            false,
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(
+            summary.watched_added, 1,
+            "non-bulk-day watched.csv film must sync"
+        );
+        assert_eq!(summary.watched_bulk_date_skipped, 0);
+        assert_eq!(client.post_count(), 1);
+
+        // POST body must include the film's logged date so it appears in Trakt history.
+        let bodies = client.post_bodies();
+        assert!(
+            bodies
+                .iter()
+                .any(|b| b.contains("2023-05-15T00:00:00.000Z")),
+            "POST body must contain the non-bulk film's logged date as watched_at; got: {:?}",
+            bodies
+        );
+    }
+
+    #[test]
+    fn already_on_trakt_check_runs_before_bulk_date_skip() {
+        // A film already on Trakt should be counted in watched_on_trakt,
+        // even if its date is a bulk day. The already-on-Trakt check runs first.
+        let export_dir = TempDir::new().unwrap();
+        let data_dir = TempDir::new().unwrap();
+
+        let bulk_date = "2023-06-16";
+        let watched = make_watched_csv(&[
+            ("Inception", 2010, "inception", bulk_date),
+            ("Film B", 2002, "film-b", bulk_date),
+            ("Film C", 2003, "film-c", bulk_date),
+            ("Film D", 2004, "film-d", bulk_date),
+            ("Film E", 2005, "film-e", bulk_date),
+            ("Film F", 2006, "film-f", bulk_date),
+            ("Film G", 2007, "film-g", bulk_date),
+            ("Film H", 2008, "film-h", bulk_date),
+            ("Film I", 2009, "film-i", bulk_date),
+            ("Film J", 2010, "film-j", bulk_date),
+        ]);
+        write_csv(&export_dir, "watched.csv", &watched);
+
+        // Films sorted: Film B-J then Inception.
+        let mut gets: Vec<(u16, String)> = (1..10)
+            .map(|i| {
+                let title = format!("Film {}", (b'A' + i) as char);
+                let year = 2001 + i as u32;
+                let tmdb = 100 + i as u64;
+                (200, match_json(&title, year, tmdb, tmdb))
+            })
+            .collect();
+        gets.push((200, match_json("Inception", 2010, 123, 27205)));
+        gets.push(trakt_history_json(&[27205])); // Inception already on Trakt
+
+        let client = MockClient::new(gets, vec![]);
+
+        let summary = run(
+            &client,
+            data_dir.path(),
+            "https://api.trakt.tv",
+            "token",
+            export_dir.path(),
+            false,
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(
+            summary.watched_on_trakt, 1,
+            "Inception (already on Trakt) must count in watched_on_trakt even on a bulk day"
+        );
+        assert_eq!(
+            summary.watched_bulk_date_skipped, 9,
+            "the remaining 9 bulk-day films must be counted in watched_bulk_date_skipped"
+        );
+        assert_eq!(summary.watched_added, 0);
+        assert_eq!(client.post_count(), 0);
+    }
+
+    #[test]
+    fn bulk_date_threshold_constant_value_is_ten() {
+        // BULK_DATE_THRESHOLD lives in constants.rs and is imported by BOTH
+        // sync_from_letterboxd (L->T) and sync_to_letterboxd (T->L).
+        // Changing it once changes behaviour in both directions.
+        assert_eq!(
+            crate::constants::BULK_DATE_THRESHOLD,
+            10,
+            "BULK_DATE_THRESHOLD must be 10 — between a normal film marathon (8-9 films) \
+             and known real-world bulk-import clusters"
+        );
+    }
+
+    #[test]
+    fn mixed_bulk_and_non_bulk_days_only_non_bulk_films_appear_in_post() {
+        // watched.csv has 1 film on a normal day (non-bulk) and 10 films on a bulk day.
+        // Only the non-bulk film must appear in the history POST; the bulk-day films must
+        // be absent from every POST body and counted in watched_bulk_date_skipped.
+        let export_dir = TempDir::new().unwrap();
+        let data_dir = TempDir::new().unwrap();
+
+        let non_bulk_date = "2023-01-15";
+        let bulk_date = "2023-06-16";
+
+        // 10 films on bulk_date + 1 film on non_bulk_date.
+        // Alphabetical order: "Film A"-"Film J" < "Inception" ("F" < "I").
+        let watched = make_watched_csv(&[
+            ("Film A", 2001, "film-a", bulk_date),
+            ("Film B", 2002, "film-b", bulk_date),
+            ("Film C", 2003, "film-c", bulk_date),
+            ("Film D", 2004, "film-d", bulk_date),
+            ("Film E", 2005, "film-e", bulk_date),
+            ("Film F", 2006, "film-f", bulk_date),
+            ("Film G", 2007, "film-g", bulk_date),
+            ("Film H", 2008, "film-h", bulk_date),
+            ("Film I", 2009, "film-i", bulk_date),
+            ("Film J", 2010, "film-j", bulk_date),
+            ("Inception", 2010, "inception", non_bulk_date),
+        ]);
+        write_csv(&export_dir, "watched.csv", &watched);
+
+        // GET responses: Film A-J (sorted) then Inception.
+        let mut gets: Vec<(u16, String)> = (0..10)
+            .map(|i| {
+                let title = format!("Film {}", (b'A' + i) as char);
+                let year = 2001 + i as u32;
+                let tmdb = 100 + i as u64;
+                (200, match_json(&title, year, tmdb, tmdb))
+            })
+            .collect();
+        gets.push((200, match_json("Inception", 2010, 123, 27205)));
+        gets.push(empty_history());
+
+        let client = MockClient::new(gets, vec![(201, ok_resp(1))]);
+
+        let summary = run(
+            &client,
+            data_dir.path(),
+            "https://api.trakt.tv",
+            "token",
+            export_dir.path(),
+            false,
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(
+            summary.watched_added, 1,
+            "only the non-bulk film must be added"
+        );
+        assert_eq!(
+            summary.watched_bulk_date_skipped, 10,
+            "all 10 bulk-day films must be counted in watched_bulk_date_skipped"
+        );
+        assert_eq!(client.post_count(), 1, "exactly one POST to history");
+
+        let bodies = client.post_bodies();
+        assert!(
+            bodies
+                .iter()
+                .any(|b| b.contains("2023-01-15T00:00:00.000Z")),
+            "POST body must contain the non-bulk film's logged date; got: {:?}",
+            bodies
+        );
+        assert!(
+            !bodies.iter().any(|b| b.contains("2023-06-16T00:00:00.000Z")),
+            "POST body must NOT contain the bulk-day date — no bulk film should be written to Trakt; got: {:?}",
+            bodies
+        );
     }
 
     #[test]

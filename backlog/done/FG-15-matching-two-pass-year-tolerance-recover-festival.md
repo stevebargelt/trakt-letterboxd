@@ -1,9 +1,11 @@
 ---
 id: FG-15
 type: story
-status: active
+status: done
 title: "matching: two-pass year tolerance (recover festival-year mismatches)"
 created: 2026-07-02
+closed: 2026-07-03
+closed_commit: 9f9aa56
 ---
 
 **Description:** As a user, I want films whose Letterboxd year differs by 1 from Trakt (festival premiere vs wide release) to still match, so ~5% of arthouse titles stop landing in the unmatched list every sync.

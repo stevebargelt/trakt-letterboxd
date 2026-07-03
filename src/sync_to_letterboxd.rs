@@ -3,6 +3,7 @@ use std::io;
 use std::path::Path;
 
 use crate::{
+    constants::BULK_DATE_THRESHOLD,
     letterboxd_export::LetterboxdExport,
     letterboxd_import::{write_diary_csv, write_watchlist_csv},
     sync_state::{Direction, ItemRef, ItemType, SyncKey, SyncState},
@@ -12,11 +13,6 @@ use crate::{
         fetch_ratings, fetch_watched_history, fetch_watchlist, WatchedMovie, WatchlistMovie,
     },
 };
-
-/// Films per calendar day at or above this count are considered a bulk-add event.
-/// A typical film marathon tops out around 8–9 films; the real-world oracle cluster
-/// was 86 films on a single day. 10 sits safely between casual use and bulk noise.
-pub const BULK_DATE_THRESHOLD: usize = 10;
 
 pub struct ErroredItem {
     pub title: String,

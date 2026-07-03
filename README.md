@@ -105,7 +105,7 @@ Import a Letterboxd export into Trakt.
 ```
 Letterboxd → Trakt sync complete
 
-  Watched history:  12 added, 1 skipped (already on Trakt), 3 skipped (already synced)
+  Watched history:  12 added, 1 skipped (already on Trakt), 86 skipped (bulk import date), 3 skipped (already synced)
   Ratings:          10 added, 2 skipped (already synced)
   Watchlist:        5 added, 0 skipped (already synced)
   Reviews:          4 transferred, 1 skipped (over limit), 0 skipped (film unmatched), 0 errored
@@ -117,9 +117,10 @@ Letterboxd → Trakt sync complete
     - Obscure Title (1974): no exact title+year match in Trakt search
 ```
 
-The watched-history line has three distinct counts:
+The watched-history line has four distinct counts:
 - **added** — written to Trakt this run
 - **skipped (already on Trakt)** — film already in your Trakt watched history; skipped to prevent a duplicate play entry (not overridable by `--force`)
+- **skipped (bulk import date)** — the `Date` column in `watched.csv` is a Letterboxd add date, not a real watch date; when 10 or more `watched.csv` films share one date it is treated as a bulk import and those films are skipped rather than backdated (same threshold used by the T→L direction — see [Bulk-date detection](#how-it-behaves))
 - **skipped (already synced)** — recorded in local sync state from a prior run; skipped by idempotency logic (`--force` bypasses this)
 
 Exit code is non-zero only when items appear in the **errored** list. Unmatched films (no write attempted) do not trigger a non-zero exit.
@@ -217,7 +218,9 @@ To include ratings in the diary CSV, add `--include-ratings` to either invocatio
 
 `--force` clears local sync state but does **not** override the already-dated skip. Only films actually emitted to the diary CSV are recorded in sync state.
 
-**Bulk-date detection**: a calendar day on which 10 or more Trakt films were watched is treated as a bulk import event (e.g. back-catalogue migration) rather than a real watch day. The threshold is 10 films per calendar day.
+**Bulk-date detection**: the same threshold (10 or more films on a single calendar day) is applied in both sync directions to avoid planting fake diary dates.
+- **L→T** (`watched.csv`): the `Date` field is a Letterboxd *add* date, not a real watch date. When 10 or more `watched.csv` entries share one date, that date is flagged as a bulk import. Those films are skipped entirely — not written to Trakt — so your Trakt history is not polluted with a synthetic same-day cluster. `diary.csv` entries have real `WatchedDate` values and are unaffected.
+- **T→L** (`--letterboxd-export`): a calendar day on which 10 or more Trakt films were watched is treated as a bulk import event. Net-new films on such days are emitted with a blank `WatchedDate`; dateless LB films on bulk days are skipped.
 
 **Ratings opt-in** (`--include-ratings`): the `Rating` column of the diary CSV is blank by default. Letterboxd's importer overwrites existing ratings with no undo, so ratings are excluded unless `--include-ratings` is passed explicitly.
 
