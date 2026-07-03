@@ -4,6 +4,7 @@ use std::process;
 
 mod auth;
 mod config;
+mod constants;
 mod letterboxd_export;
 mod letterboxd_import;
 mod matching;
@@ -92,8 +93,8 @@ fn format_from_letterboxd_summary(s: &sync_from_letterboxd::SyncSummary) -> Stri
     writeln!(out).unwrap();
     writeln!(
         out,
-        "  Watched history:  {} added, {} skipped (already on Trakt), {} skipped (already synced)",
-        s.watched_added, s.watched_on_trakt, s.watched_skipped
+        "  Watched history:  {} added, {} skipped (already on Trakt), {} skipped (bulk import date), {} skipped (already synced)",
+        s.watched_added, s.watched_on_trakt, s.watched_bulk_date_skipped, s.watched_skipped
     )
     .unwrap();
     writeln!(
@@ -456,6 +457,7 @@ mod tests {
             watched_added,
             watched_on_trakt: 0,
             watched_skipped,
+            watched_bulk_date_skipped: 0,
             ratings_added,
             ratings_skipped,
             watchlist_added,
@@ -693,6 +695,7 @@ mod tests {
             watched_added: 2,
             watched_on_trakt: 3,
             watched_skipped: 1,
+            watched_bulk_date_skipped: 0,
             ratings_added: 0,
             ratings_skipped: 0,
             watchlist_added: 0,
@@ -716,6 +719,44 @@ mod tests {
         );
         assert!(
             output.contains("2 added"),
+            "output must show added count; got:\n{output}"
+        );
+    }
+
+    #[test]
+    fn from_letterboxd_summary_shows_bulk_date_skip_count_distinctly() {
+        let s = sync_from_letterboxd::SyncSummary {
+            watched_added: 1,
+            watched_on_trakt: 2,
+            watched_skipped: 3,
+            watched_bulk_date_skipped: 106,
+            ratings_added: 0,
+            ratings_skipped: 0,
+            watchlist_added: 0,
+            watchlist_skipped: 0,
+            unmatched: vec![],
+            errored: vec![],
+            dry_run: false,
+            reviews_transferred: 0,
+            reviews_skipped_over_limit: 0,
+            reviews_skipped_unmatched: 0,
+            year_tolerance_warnings: vec![],
+        };
+        let output = format_from_letterboxd_summary(&s);
+        assert!(
+            output.contains("106 skipped (bulk import date)"),
+            "output must show bulk-import-date skip count distinctly; got:\n{output}"
+        );
+        assert!(
+            output.contains("2 skipped (already on Trakt)"),
+            "output must still show already-on-Trakt count; got:\n{output}"
+        );
+        assert!(
+            output.contains("3 skipped (already synced)"),
+            "output must still show already-synced count; got:\n{output}"
+        );
+        assert!(
+            output.contains("1 added"),
             "output must show added count; got:\n{output}"
         );
     }
