@@ -7,7 +7,7 @@ A personal CLI that syncs films between Trakt and Letterboxd — watched history
 Letterboxd has no usable read/write API for personal projects. As a result, the two sync directions work differently:
 
 - **Letterboxd → Trakt**: you export your data from Letterboxd (Settings → Data → Export Your Data), run `sync from-letterboxd` pointing at the ZIP, and the tool writes directly to Trakt via its API. Fully automated on the Trakt side.
-- **Trakt → Letterboxd**: the tool reads Trakt via its API and generates two CSV files. You then upload them manually at [letterboxd.com/import](https://letterboxd.com/import). One manual browser step required.
+- **Trakt → Letterboxd**: the tool reads Trakt via its API and generates two CSV files — a diary/watched CSV and a watchlist CSV. Each goes to a different Letterboxd importer: the diary CSV to [letterboxd.com/import](https://letterboxd.com/import) (marks films as watched), and the watchlist CSV via the **Import films to watchlist** sidebar on your Letterboxd Watchlist page. Two manual browser steps required.
 
 No scraping, no unofficial APIs. Fully compliant with both services' terms of use.
 
@@ -142,7 +142,9 @@ Trakt → Letterboxd export complete
   Diary CSV:     /home/user/.local/share/trakt-letterboxd/letterboxd-diary-import.csv
   Watchlist CSV: /home/user/.local/share/trakt-letterboxd/letterboxd-watchlist-import.csv
 
-Next steps: Upload these files at https://letterboxd.com/import/ — diary file first, then watchlist.
+Next steps:
+  1. Diary CSV   → https://letterboxd.com/import/ (marks films as watched)
+  2. Watchlist CSV → Your Letterboxd Watchlist page → sidebar 'Import films to watchlist' → attach the CSV → 'Add films to watchlist'
 ```
 
 ## Typical workflows
@@ -162,8 +164,8 @@ Next steps: Upload these files at https://letterboxd.com/import/ — diary file 
    ```sh
    trakt-letterboxd sync to-letterboxd
    ```
-2. Go to [letterboxd.com/import](https://letterboxd.com/import).
-3. Upload the **diary CSV first**, then the **watchlist CSV**.
+2. Upload the **diary CSV** at [letterboxd.com/import](https://letterboxd.com/import) (marks films as watched).
+3. Upload the **watchlist CSV** via your Letterboxd Watchlist page → sidebar **Import films to watchlist** → attach the CSV → **Add films to watchlist**.
 
 ## How it behaves
 

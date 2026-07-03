@@ -218,9 +218,15 @@ fn format_to_letterboxd_summary(
         )
         .unwrap();
         writeln!(out).unwrap();
+        writeln!(out, "Next steps:").unwrap();
         writeln!(
             out,
-            "Next steps: Upload these files at https://letterboxd.com/import/ \u{2014} diary file first, then watchlist."
+            "  1. Diary CSV   \u{2192} https://letterboxd.com/import/ (marks films as watched)"
+        )
+        .unwrap();
+        writeln!(
+            out,
+            "  2. Watchlist CSV \u{2192} Your Letterboxd Watchlist page \u{2192} sidebar \u{2018}Import films to watchlist\u{2019} \u{2192} attach the CSV \u{2192} \u{2018}Add films to watchlist\u{2019}"
         )
         .unwrap();
     }
@@ -628,6 +634,137 @@ mod tests {
         assert!(
             !output.contains("[DRY RUN]"),
             "real-run output must not contain '[DRY RUN]'; got:\n{output}"
+        );
+    }
+
+    #[test]
+    fn to_letterboxd_summary_routes_diary_to_import_and_watchlist_to_watchlist_importer() {
+        let s = make_to_summary(1, 0, 1, 0, 0, false, vec![]);
+        let data_dir = std::path::Path::new("/tmp/dummy");
+        let output = format_to_letterboxd_summary(&s, data_dir);
+        assert!(
+            output.contains("letterboxd.com/import"),
+            "diary next-step must reference letterboxd.com/import; got:\n{output}"
+        );
+        assert!(
+            output.contains("Import films to watchlist"),
+            "watchlist next-step must name the 'Import films to watchlist' sidebar link; got:\n{output}"
+        );
+        assert!(
+            output.contains("Add films to watchlist"),
+            "watchlist next-step must name the 'Add films to watchlist' button; got:\n{output}"
+        );
+        // The watchlist CSV instruction must NOT point to /import (that marks films watched).
+        let lines: Vec<&str> = output.lines().collect();
+        let watchlist_line = lines
+            .iter()
+            .find(|l| l.contains("Watchlist CSV"))
+            .expect("output must contain a Watchlist CSV next-step line");
+        assert!(
+            !watchlist_line.contains("letterboxd.com/import"),
+            "watchlist CSV next-step must NOT reference letterboxd.com/import (it marks films watched); got:\n{watchlist_line}"
+        );
+    }
+
+    // ── FG-18: watchlist CSV must NOT route to /import ───────────────────────
+    // The /import endpoint marks films as *watched*. Sending a watchlist CSV
+    // there would wrongly add want-to-watch films to the user's diary.
+
+    /// The line that mentions the Watchlist CSV must not contain the URL
+    /// `letterboxd.com/import` — that endpoint marks films as watched.
+    #[test]
+    fn fg18_watchlist_next_step_does_not_reference_letterboxd_com_import() {
+        let s = make_to_summary(1, 1, 1, 2, 0, false, vec![]);
+        let data_dir = std::path::Path::new("/tmp/dummy");
+        let output = format_to_letterboxd_summary(&s, data_dir);
+
+        let watchlist_line = output
+            .lines()
+            .find(|l| l.contains("Watchlist CSV"))
+            .expect("output must contain a 'Watchlist CSV' next-step line");
+
+        assert!(
+            !watchlist_line.contains("letterboxd.com/import"),
+            "watchlist next-step must NOT reference letterboxd.com/import (that endpoint marks films watched, not want-to-watch); line was:\n  {watchlist_line}"
+        );
+    }
+
+    /// The watchlist next-step must name the sidebar link the user clicks to
+    /// open the watchlist importer ('Import films to watchlist').
+    #[test]
+    fn fg18_watchlist_next_step_names_import_films_to_watchlist_ui() {
+        let s = make_to_summary(1, 1, 1, 2, 0, false, vec![]);
+        let data_dir = std::path::Path::new("/tmp/dummy");
+        let output = format_to_letterboxd_summary(&s, data_dir);
+
+        assert!(
+            output.contains("Import films to watchlist"),
+            "watchlist next-step must reference the 'Import films to watchlist' sidebar link; got:\n{output}"
+        );
+    }
+
+    /// The watchlist next-step must name the submit button the user clicks
+    /// ('Add films to watchlist') to distinguish it from the diary importer.
+    #[test]
+    fn fg18_watchlist_next_step_names_add_films_to_watchlist_button() {
+        let s = make_to_summary(1, 1, 1, 2, 0, false, vec![]);
+        let data_dir = std::path::Path::new("/tmp/dummy");
+        let output = format_to_letterboxd_summary(&s, data_dir);
+
+        assert!(
+            output.contains("Add films to watchlist"),
+            "watchlist next-step must reference the 'Add films to watchlist' button; got:\n{output}"
+        );
+    }
+
+    /// The diary next-step must route to letterboxd.com/import — the correct
+    /// endpoint for marking films as watched.
+    #[test]
+    fn fg18_diary_next_step_routes_to_letterboxd_com_import() {
+        let s = make_to_summary(3, 2, 3, 0, 0, false, vec![]);
+        let data_dir = std::path::Path::new("/tmp/dummy");
+        let output = format_to_letterboxd_summary(&s, data_dir);
+
+        // The next-step line for the diary CSV contains both "Diary CSV" and
+        // the arrow character "→". The file-path line does not contain "→".
+        let diary_step_line = output
+            .lines()
+            .find(|l| l.contains("Diary CSV") && l.contains('\u{2192}'))
+            .expect("output must contain a 'Diary CSV →' next-step line");
+
+        assert!(
+            diary_step_line.contains("letterboxd.com/import"),
+            "diary next-step must reference letterboxd.com/import; line was:\n  {diary_step_line}"
+        );
+    }
+
+    /// The two CSV files must appear as two distinct numbered destinations in
+    /// the next-steps section, so the user knows to handle them separately.
+    #[test]
+    fn fg18_diary_and_watchlist_presented_as_two_distinct_next_step_destinations() {
+        let s = make_to_summary(5, 3, 5, 4, 0, false, vec![]);
+        let data_dir = std::path::Path::new("/tmp/dummy");
+        let output = format_to_letterboxd_summary(&s, data_dir);
+
+        // Both numbered steps must appear.
+        assert!(
+            output.contains("1.") && output.contains("2."),
+            "next-steps must have at least two numbered items; got:\n{output}"
+        );
+
+        // Each CSV is called out on its own step line.
+        let diary_step = output
+            .lines()
+            .find(|l| l.contains("Diary CSV"))
+            .expect("a step must mention 'Diary CSV'");
+        let watchlist_step = output
+            .lines()
+            .find(|l| l.contains("Watchlist CSV"))
+            .expect("a step must mention 'Watchlist CSV'");
+
+        assert_ne!(
+            diary_step, watchlist_step,
+            "Diary CSV and Watchlist CSV must be on separate lines (distinct destinations)"
         );
     }
 

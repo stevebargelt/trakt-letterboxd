@@ -1,9 +1,11 @@
 ---
 id: FG-14
 type: story
-status: active
+status: done
 title: "docs: README + usage guide (auth + sync commands)"
 created: 2026-07-02
+closed: 2026-07-02
+closed_commit: f7ef3de8910c75094c95d2a08f4bab6cfb9d9f69
 ---
 
 **Description:** As a user/operator, I want a README and usage guide documenting setup (Trakt app registration, config file, env vars) and the auth + sync commands, so the CLI is usable without reading source.
