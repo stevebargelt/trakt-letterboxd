@@ -1,9 +1,11 @@
 ---
 id: FG-19
 type: story
-status: active
+status: done
 title: "L->T: detect bulk-date / dateless watched.csv, don't backdate to import-day (mirror FG-17)"
 created: 2026-07-03
+closed: 2026-07-03
+closed_commit: 14cad23
 ---
 
 **Description:** As a user, when I sync Letterboxd -> Trakt I do NOT want films from a Letterboxd bulk-import day to be written to Trakt stamped with that import date, so my Trakt history is not polluted with a fake bulk-date cluster.
