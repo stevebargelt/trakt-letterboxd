@@ -247,3 +247,7 @@ Films that fail both passes are listed in **"Unmatched films"** in the run summa
 - Films only. Letterboxd is film-only; TV shows and episodes are out of scope.
 - No conflict resolution. The tool skips already-synced items; it does not merge divergent edits between the two services.
 - Review fidelity is best-effort. See [PRD.md](PRD.md) for the full design rationale and non-goals.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
