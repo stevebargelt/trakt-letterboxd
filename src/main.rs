@@ -86,8 +86,8 @@ fn format_from_letterboxd_summary(s: &sync_from_letterboxd::SyncSummary) -> Stri
     writeln!(out).unwrap();
     writeln!(
         out,
-        "  Watched history:  {} added, {} skipped (already synced)",
-        s.watched_added, s.watched_skipped
+        "  Watched history:  {} added, {} skipped (already on Trakt), {} skipped (already synced)",
+        s.watched_added, s.watched_on_trakt, s.watched_skipped
     )
     .unwrap();
     writeln!(
@@ -390,6 +390,7 @@ mod tests {
     ) -> sync_from_letterboxd::SyncSummary {
         sync_from_letterboxd::SyncSummary {
             watched_added,
+            watched_on_trakt: 0,
             watched_skipped,
             ratings_added,
             ratings_skipped,
@@ -612,6 +613,40 @@ mod tests {
         assert!(
             !output.contains("[DRY RUN]"),
             "real-run output must not contain '[DRY RUN]'; got:\n{output}"
+        );
+    }
+
+    #[test]
+    fn from_letterboxd_summary_shows_already_on_trakt_count_distinctly() {
+        // watched_on_trakt must appear as its own "(already on Trakt)" label,
+        // not collapsed into the "(already synced)" bucket.
+        let s = sync_from_letterboxd::SyncSummary {
+            watched_added: 2,
+            watched_on_trakt: 3,
+            watched_skipped: 1,
+            ratings_added: 0,
+            ratings_skipped: 0,
+            watchlist_added: 0,
+            watchlist_skipped: 0,
+            unmatched: vec![],
+            errored: vec![],
+            dry_run: false,
+            reviews_transferred: 0,
+            reviews_skipped_over_limit: 0,
+            reviews_skipped_unmatched: 0,
+        };
+        let output = format_from_letterboxd_summary(&s);
+        assert!(
+            output.contains("3 skipped (already on Trakt)"),
+            "output must show already-on-Trakt count; got:\n{output}"
+        );
+        assert!(
+            output.contains("1 skipped (already synced)"),
+            "output must show already-synced count; got:\n{output}"
+        );
+        assert!(
+            output.contains("2 added"),
+            "output must show added count; got:\n{output}"
         );
     }
 

@@ -97,7 +97,7 @@ Import a Letterboxd export into Trakt.
 
 - `<path>`: path to the Letterboxd export ZIP or an extracted directory
 - `--dry-run`: parse and report what would be synced without writing anything to Trakt or updating sync state
-- `--force`: re-sync all items, ignoring the local state file (bypasses dedup)
+- `--force`: re-sync items that are already recorded in local sync state (bypasses local dedup). Films already present in your Trakt watched history are **always** skipped regardless of `--force` — see [Duplicate play prevention](#duplicate-play-prevention) below.
 
 **What it syncs**: watched history (with backdated `watched_at` dates), ratings (converted to Trakt's 1–10 scale), watchlist entries, and review text as Trakt notes (best-effort; see [Review handling](#review-handling)).
 
@@ -105,7 +105,7 @@ Import a Letterboxd export into Trakt.
 ```
 Letterboxd → Trakt sync complete
 
-  Watched history:  12 added, 3 skipped (already synced)
+  Watched history:  12 added, 1 skipped (already on Trakt), 3 skipped (already synced)
   Ratings:          10 added, 2 skipped (already synced)
   Watchlist:        5 added, 0 skipped (already synced)
   Reviews:          4 transferred, 1 skipped (over limit), 0 skipped (film unmatched), 0 errored
@@ -114,6 +114,11 @@ Letterboxd → Trakt sync complete
     - Obscure Title (1974): no exact title+year match in Trakt search
     ...
 ```
+
+The watched-history line has three distinct counts:
+- **added** — written to Trakt this run
+- **skipped (already on Trakt)** — film already in your Trakt watched history; skipped to prevent a duplicate play entry (not overridable by `--force`)
+- **skipped (already synced)** — recorded in local sync state from a prior run; skipped by idempotency logic (`--force` bypasses this)
 
 Exit code is non-zero only when items appear in the **errored** list. Unmatched films (no write attempted) do not trigger a non-zero exit.
 
@@ -169,7 +174,9 @@ Next steps:
 
 ## How it behaves
 
-**Idempotent**: a local state file (`sync_state.json` in `data_dir`) records synced items keyed by TMDB ID, type, and date. Re-running does not create duplicates. Use `--force` to override.
+**Idempotent**: a local state file (`sync_state.json` in `data_dir`) records synced items keyed by TMDB ID, type, and date. Re-running does not create duplicates. Use `--force` to override local state.
+
+**Duplicate play prevention**: before writing watched-history entries, `sync from-letterboxd` fetches your current Trakt watched history and skips any film already present (matched by TMDB ID). This prevents phantom rewatches when Letterboxd's `watched.csv` and your Trakt history overlap. The skip is not overridable by `--force` — `--force` clears only the local state file, not the live Trakt account check.
 
 **Film matching**: TMDB ID is used as the canonical bridge — Trakt exposes it natively and Letterboxd accepts it on import. When TMDB ID is unavailable, the tool falls back to IMDb ID, then title+year. A minority of films (foreign titles, same-year remakes, very obscure releases) may go unmatched; these are listed in the run summary, not silently dropped.
 
