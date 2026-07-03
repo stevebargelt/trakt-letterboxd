@@ -10,11 +10,20 @@ fn truncate_to_date(ts: &str) -> &str {
     ts.split('T').next().unwrap_or(ts)
 }
 
+/// Write the Letterboxd diary import CSV.
+///
+/// `entries` is a slice of `(movie, date_override)` pairs where:
+///   - `None`      → use the movie's `watched_at` timestamp truncated to a date
+///   - `Some("")`  → emit a blank WatchedDate (mark watched, no diary date)
+///   - `Some(s)`   → emit `s` as the literal WatchedDate
+///
+/// When `include_ratings` is `false` the Rating column is always empty.
 pub fn write_diary_csv<W: io::Write>(
     w: W,
-    history: &[WatchedMovie],
+    entries: &[(&WatchedMovie, Option<&str>)],
     ratings: &[RatedMovie],
     notes: &HashMap<u64, String>,
+    include_ratings: bool,
 ) -> Result<(), String> {
     let rating_map: HashMap<u64, u8> = ratings
         .iter()
@@ -34,16 +43,23 @@ pub fn write_diary_csv<W: io::Write>(
     ])
     .map_err(|e| e.to_string())?;
 
-    for entry in history {
+    for (entry, date_override) in entries {
         let movie = &entry.movie;
         let year = movie.year.map(|y| y.to_string()).unwrap_or_default();
         let tmdb_id = movie.tmdb_id.map(|id| id.to_string()).unwrap_or_default();
-        let watched_date = truncate_to_date(&entry.watched_at);
-        let rating = movie
-            .tmdb_id
-            .and_then(|id| rating_map.get(&id))
-            .map(|&r| format!("{:.1}", trakt_rating_to_letterboxd(r)))
-            .unwrap_or_default();
+        let watched_date: &str = match date_override {
+            None => truncate_to_date(&entry.watched_at),
+            Some(s) => s,
+        };
+        let rating = if include_ratings {
+            movie
+                .tmdb_id
+                .and_then(|id| rating_map.get(&id))
+                .map(|&r| format!("{:.1}", trakt_rating_to_letterboxd(r)))
+                .unwrap_or_default()
+        } else {
+            String::new()
+        };
         let review = movie
             .tmdb_id
             .and_then(|id| notes.get(&id))
@@ -132,6 +148,11 @@ mod tests {
             .collect()
     }
 
+    /// Build a plain `(movie, None)` entry slice — preserves pre-FG-17 behaviour.
+    fn as_entries(history: &[WatchedMovie]) -> Vec<(&WatchedMovie, Option<&str>)> {
+        history.iter().map(|m| (m, None)).collect()
+    }
+
     #[test]
     fn diary_header_and_watched_rated_film() {
         let history = vec![make_watched(
@@ -143,7 +164,14 @@ mod tests {
         let ratings = vec![make_rated(603, 8)];
 
         let mut out = Vec::new();
-        write_diary_csv(&mut out, &history, &ratings, &HashMap::new()).unwrap();
+        write_diary_csv(
+            &mut out,
+            &as_entries(&history),
+            &ratings,
+            &HashMap::new(),
+            true,
+        )
+        .unwrap();
         let lines = to_lines(out);
 
         assert_eq!(
@@ -163,7 +191,7 @@ mod tests {
         )];
 
         let mut out = Vec::new();
-        write_diary_csv(&mut out, &history, &[], &HashMap::new()).unwrap();
+        write_diary_csv(&mut out, &as_entries(&history), &[], &HashMap::new(), true).unwrap();
         let lines = to_lines(out);
 
         assert!(
@@ -188,7 +216,7 @@ mod tests {
         )];
 
         let mut out = Vec::new();
-        write_diary_csv(&mut out, &history, &[], &HashMap::new()).unwrap();
+        write_diary_csv(&mut out, &as_entries(&history), &[], &HashMap::new(), true).unwrap();
         let csv_str = String::from_utf8(out).unwrap();
 
         assert!(
@@ -216,7 +244,14 @@ mod tests {
         let ratings = vec![make_rated(438631, 9)];
 
         let mut out = Vec::new();
-        write_diary_csv(&mut out, &history, &ratings, &HashMap::new()).unwrap();
+        write_diary_csv(
+            &mut out,
+            &as_entries(&history),
+            &ratings,
+            &HashMap::new(),
+            true,
+        )
+        .unwrap();
         let lines = to_lines(out);
 
         assert_eq!(lines[1], "Dune,2021,438631,2024-03-01,4.5,No,,");
@@ -232,7 +267,7 @@ mod tests {
         )];
 
         let mut out = Vec::new();
-        write_diary_csv(&mut out, &history, &[], &HashMap::new()).unwrap();
+        write_diary_csv(&mut out, &as_entries(&history), &[], &HashMap::new(), true).unwrap();
         let lines = to_lines(out);
 
         assert_eq!(lines[1], "Blade Runner,1982,78,2024-04-01,,No,,");
@@ -279,7 +314,7 @@ mod tests {
             "2024-05-01T00:00:00.000Z",
         )];
         let mut out = Vec::new();
-        write_diary_csv(&mut out, &history, &[], &HashMap::new()).unwrap();
+        write_diary_csv(&mut out, &as_entries(&history), &[], &HashMap::new(), true).unwrap();
         let lines = to_lines(out);
         // Rewatch is the 6th field (index 5). Assert the literal substring ",No," appears.
         assert!(
@@ -302,7 +337,7 @@ mod tests {
             "2024-06-01T00:00:00.000Z",
         )];
         let mut out = Vec::new();
-        write_diary_csv(&mut out, &history, &[], &HashMap::new()).unwrap();
+        write_diary_csv(&mut out, &as_entries(&history), &[], &HashMap::new(), true).unwrap();
 
         // Parse back with csv::Reader; it must reconstruct the original string exactly.
         let mut rdr = csv::Reader::from_reader(out.as_slice());
@@ -334,7 +369,7 @@ mod tests {
             movie,
         }];
         let mut out = Vec::new();
-        write_diary_csv(&mut out, &history, &[], &HashMap::new()).unwrap();
+        write_diary_csv(&mut out, &as_entries(&history), &[], &HashMap::new(), true).unwrap();
 
         let mut rdr = csv::Reader::from_reader(out.as_slice());
         let record = rdr
@@ -354,7 +389,7 @@ mod tests {
     #[test]
     fn diary_empty_input_produces_header_only() {
         let mut out = Vec::new();
-        write_diary_csv(&mut out, &[], &[], &HashMap::new()).unwrap();
+        write_diary_csv(&mut out, &[], &[], &HashMap::new(), true).unwrap();
         let lines = to_lines(out);
         assert_eq!(
             lines.len(),
@@ -375,7 +410,7 @@ mod tests {
     fn diary_rated_but_not_watched_excluded() {
         let ratings = vec![make_rated(12345, 8)];
         let mut out = Vec::new();
-        write_diary_csv(&mut out, &[], &ratings, &HashMap::new()).unwrap();
+        write_diary_csv(&mut out, &[], &ratings, &HashMap::new(), true).unwrap();
         let lines = to_lines(out);
         assert_eq!(
             lines.len(),
@@ -396,7 +431,7 @@ mod tests {
         notes.insert(603u64, "An absolute masterpiece.".to_string());
 
         let mut out = Vec::new();
-        write_diary_csv(&mut out, &history, &[], &notes).unwrap();
+        write_diary_csv(&mut out, &as_entries(&history), &[], &notes, true).unwrap();
 
         let mut rdr = csv::Reader::from_reader(out.as_slice());
         let record = rdr.records().next().unwrap().unwrap();
@@ -421,7 +456,7 @@ mod tests {
         notes.insert(603u64, tricky_review.to_string());
 
         let mut out = Vec::new();
-        write_diary_csv(&mut out, &history, &[], &notes).unwrap();
+        write_diary_csv(&mut out, &as_entries(&history), &[], &notes, true).unwrap();
 
         let mut rdr = csv::Reader::from_reader(out.as_slice());
         let record = rdr
@@ -447,13 +482,105 @@ mod tests {
         notes.insert(603u64, "Note for a different film".to_string());
 
         let mut out = Vec::new();
-        write_diary_csv(&mut out, &history, &[], &notes).unwrap();
+        write_diary_csv(&mut out, &as_entries(&history), &[], &notes, true).unwrap();
 
         let mut rdr = csv::Reader::from_reader(out.as_slice());
         let record = rdr.records().next().unwrap().unwrap();
         assert_eq!(
             &record[7], "",
             "Review column must be empty when no note for this film"
+        );
+    }
+
+    // --- FG-17 new tests ---
+
+    #[test]
+    fn diary_some_empty_string_date_override_emits_blank_watched_date() {
+        let movie = make_watched("Dune", 2021, 438631, "2023-09-10T00:00:00.000Z");
+        // Some("") means bulk-date net-new: mark watched, no diary date
+        let entries: Vec<(&WatchedMovie, Option<&str>)> = vec![(&movie, Some(""))];
+
+        let mut out = Vec::new();
+        write_diary_csv(&mut out, &entries, &[], &HashMap::new(), true).unwrap();
+
+        let mut rdr = csv::Reader::from_reader(out.as_slice());
+        let record = rdr.records().next().unwrap().unwrap();
+        assert_eq!(
+            &record[3], "",
+            "WatchedDate must be blank when date_override is Some(\"\")"
+        );
+    }
+
+    #[test]
+    fn diary_some_date_override_emits_literal_date() {
+        let movie = make_watched("Inception", 2010, 27205, "2023-09-10T00:00:00.000Z");
+        let entries: Vec<(&WatchedMovie, Option<&str>)> = vec![(&movie, Some("2023-09-10"))];
+
+        let mut out = Vec::new();
+        write_diary_csv(&mut out, &entries, &[], &HashMap::new(), true).unwrap();
+
+        let mut rdr = csv::Reader::from_reader(out.as_slice());
+        let record = rdr.records().next().unwrap().unwrap();
+        assert_eq!(
+            &record[3], "2023-09-10",
+            "WatchedDate must be the literal override string"
+        );
+    }
+
+    #[test]
+    fn diary_include_ratings_false_suppresses_rating_column() {
+        let history = vec![make_watched(
+            "The Matrix",
+            1999,
+            603,
+            "2024-01-15T20:30:00.000Z",
+        )];
+        let ratings = vec![make_rated(603, 8)];
+
+        let mut out = Vec::new();
+        write_diary_csv(
+            &mut out,
+            &as_entries(&history),
+            &ratings,
+            &HashMap::new(),
+            false, // include_ratings = false
+        )
+        .unwrap();
+
+        let mut rdr = csv::Reader::from_reader(out.as_slice());
+        let record = rdr.records().next().unwrap().unwrap();
+        assert_eq!(
+            &record[4], "",
+            "Rating column must be empty when include_ratings=false, got: {:?}",
+            &record[4]
+        );
+    }
+
+    #[test]
+    fn diary_include_ratings_true_preserves_rating_conversion() {
+        let history = vec![make_watched(
+            "The Matrix",
+            1999,
+            603,
+            "2024-01-15T20:30:00.000Z",
+        )];
+        let ratings = vec![make_rated(603, 8)];
+
+        let mut out = Vec::new();
+        write_diary_csv(
+            &mut out,
+            &as_entries(&history),
+            &ratings,
+            &HashMap::new(),
+            true, // include_ratings = true
+        )
+        .unwrap();
+
+        let mut rdr = csv::Reader::from_reader(out.as_slice());
+        let record = rdr.records().next().unwrap().unwrap();
+        assert_eq!(
+            &record[4], "4.0",
+            "Rating column must contain converted rating when include_ratings=true"
         );
     }
 }

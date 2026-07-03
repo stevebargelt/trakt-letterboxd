@@ -1,9 +1,11 @@
 ---
 id: FG-16
 type: story
-status: active
+status: done
 title: "L->T: skip films already in Trakt history to avoid duplicate plays"
 created: 2026-07-02
+closed: 2026-07-03
+closed_commit: f15c82d
 ---
 
 **Description:** As a user, when I sync Letterboxd -> Trakt I do NOT want films already in my Trakt history to get a second "play" entry dated to a Letterboxd logging date, so my Trakt history is not polluted with phantom rewatches.

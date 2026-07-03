@@ -122,18 +122,20 @@ The watched-history line has three distinct counts:
 
 Exit code is non-zero only when items appear in the **errored** list. Unmatched films (no write attempted) do not trigger a non-zero exit.
 
-### `sync to-letterboxd [--dry-run] [--force]`
+### `sync to-letterboxd [--dry-run] [--force] [--letterboxd-export <PATH>] [--include-ratings]`
 
 Read Trakt data and generate Letterboxd import CSVs.
 
 - `--dry-run`: fetch Trakt data and report counts without writing any files or updating sync state
-- `--force`: re-export all items, ignoring previously exported items
+- `--force`: re-export all items, ignoring previously exported items. Clears local sync state for the T→L direction; does **not** override the already-dated skip imposed by `--letterboxd-export`.
+- `--letterboxd-export <PATH>`: path to the user's Letterboxd export directory or ZIP. When provided, each Trakt film is classified against the existing LB library so only net-new and date-enrichable films are emitted. Omitting this flag preserves the previous behavior (all SyncState-unrecorded films are exported).
+- `--include-ratings`: write Trakt ratings into the `Rating` column of the diary CSV. **Off by default** — Letterboxd's importer overwrites existing ratings with no undo.
 
 **Output files** written to `data_dir`:
-- `letterboxd-diary-import.csv` — watched history with dates, ratings, and any review text
+- `letterboxd-diary-import.csv` — watched history with dates and any review text; the `Rating` column is blank by default (pass `--include-ratings` to populate it)
 - `letterboxd-watchlist-import.csv` — watchlist entries
 
-**Output summary**:
+**Output summary** (without `--letterboxd-export`):
 ```
 Trakt → Letterboxd export complete
 
@@ -152,6 +154,20 @@ Next steps:
   2. Watchlist CSV → Your Letterboxd Watchlist page → sidebar 'Import films to watchlist' → attach the CSV → 'Add films to watchlist'
 ```
 
+When `--letterboxd-export` is provided, five classification-bucket counts also appear:
+```
+  Net-new (clean date):       240
+  Net-new (bulk date, blank): 28
+  Enriched (date added):      21
+  Skipped (bulk+dateless):    58
+  Skipped (already dated):    2
+```
+
+When `--include-ratings` is omitted and the diary contains rated films, a note appears:
+```
+  Ratings omitted from CSV (pass --include-ratings to include; Letterboxd import overwrites existing ratings)
+```
+
 ## Typical workflows
 
 ### Letterboxd → Trakt
@@ -165,6 +181,7 @@ Next steps:
 
 ### Trakt → Letterboxd
 
+**Basic** (exports everything not yet in local sync state):
 1. Run:
    ```sh
    trakt-letterboxd sync to-letterboxd
@@ -172,11 +189,35 @@ Next steps:
 2. Upload the **diary CSV** at [letterboxd.com/import](https://letterboxd.com/import) (marks films as watched).
 3. Upload the **watchlist CSV** via your Letterboxd Watchlist page → sidebar **Import films to watchlist** → attach the CSV → **Add films to watchlist**.
 
+**With smart deduplication** (skip films already in your Letterboxd library):
+1. In Letterboxd: **Settings → Data → Export Your Data** — download the ZIP.
+2. Run:
+   ```sh
+   trakt-letterboxd sync to-letterboxd --letterboxd-export ~/Downloads/letterboxd-export.zip
+   ```
+3. Upload the CSVs as in steps 2–3 of the basic workflow above.
+
+To include ratings in the diary CSV, add `--include-ratings` to either invocation. **Caution:** Letterboxd's importer overwrites existing ratings with no undo.
+
 ## How it behaves
 
 **Idempotent**: a local state file (`sync_state.json` in `data_dir`) records synced items keyed by TMDB ID, type, and date. Re-running does not create duplicates. Use `--force` to override local state.
 
 **Duplicate play prevention**: before writing watched-history entries, `sync from-letterboxd` fetches your current Trakt watched history and skips any film already present (matched by TMDB ID). This prevents phantom rewatches when Letterboxd's `watched.csv` and your Trakt history overlap. The skip is not overridable by `--force` — `--force` clears only the local state file, not the live Trakt account check.
+
+**Smart deduplication** (`--letterboxd-export`): when a Letterboxd export path is provided, each Trakt film is classified by normalized title + year into one of five buckets:
+
+- **Net-new (clean date)** — not in LB, watch day has fewer than 10 films: emitted with the Trakt watch date.
+- **Net-new (bulk date, blank)** — not in LB, watch day has 10 or more films (bulk-add): emitted with a **blank** `WatchedDate` to avoid creating a fake diary date.
+- **Enriched** — dateless in LB (no watch date), and the watch day is clean: emitted with the Trakt date to add a real diary date.
+- **Skipped (already dated)** — already has a watch date in LB: not emitted. Not recorded in sync state, so it re-appears on the next run if the LB export changes.
+- **Skipped (bulk+dateless)** — dateless in LB and the watch day is a bulk day: not emitted to avoid planting a fake diary date. Also not recorded in sync state.
+
+`--force` clears local sync state but does **not** override the already-dated skip. Only films actually emitted to the diary CSV are recorded in sync state.
+
+**Bulk-date detection**: a calendar day on which 10 or more Trakt films were watched is treated as a bulk import event (e.g. back-catalogue migration) rather than a real watch day. The threshold is 10 films per calendar day.
+
+**Ratings opt-in** (`--include-ratings`): the `Rating` column of the diary CSV is blank by default. Letterboxd's importer overwrites existing ratings with no undo, so ratings are excluded unless `--include-ratings` is passed explicitly.
 
 **Film matching**: TMDB ID is used as the canonical bridge — Trakt exposes it natively and Letterboxd accepts it on import. When TMDB ID is unavailable, the tool falls back to IMDb ID, then title+year. A minority of films (foreign titles, same-year remakes, very obscure releases) may go unmatched; these are listed in the run summary, not silently dropped.
 

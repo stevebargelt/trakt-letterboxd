@@ -144,6 +144,26 @@ fn valid_config_file_loads_without_error() {
         .stderr(predicate::str::contains("config").not());
 }
 
+// ── FG-17: new --letterboxd-export and --include-ratings flags in help ────────
+
+#[test]
+fn sync_to_letterboxd_help_shows_letterboxd_export_flag() {
+    cmd()
+        .args(["sync", "to-letterboxd", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--letterboxd-export"));
+}
+
+#[test]
+fn sync_to_letterboxd_help_shows_include_ratings_flag() {
+    cmd()
+        .args(["sync", "to-letterboxd", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--include-ratings"));
+}
+
 // ── 5. Env var overrides take effect ──────────────────────────────────────────
 
 #[test]
